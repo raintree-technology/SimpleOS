@@ -373,7 +373,6 @@ export default function CRTFrame({ children }: CRTFrameProps) {
           box-shadow:
             inset 0 0 100px rgba(60, 40, 80, 0.3),
             inset 0 0 25px rgba(0, 0, 0, 0.8);
-          animation: wobble 0.1s infinite;
         }
 
         .screen-content {
