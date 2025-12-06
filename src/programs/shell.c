@@ -5,19 +5,14 @@
 #define MAX_CMD_LEN 256
 #define MAX_ARGS 16
 
-// System call wrappers (since we're calling them from user space)
+// System call wrappers for 32-bit (i386 convention)
+// eax=syscall#, ebx=arg1, ecx=arg2, edx=arg3, esi=arg4, edi=arg5
 static int sys_write(int fd, const char* buf, int len) {
     int ret;
     asm volatile(
-        "mov $2, %%rax\n"      // SYS_WRITE
-        "mov %1, %%rdi\n"      // fd
-        "mov %2, %%rsi\n"      // buffer
-        "mov %3, %%rdx\n"      // length
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(ret)
-        : "r"(fd), "r"(buf), "r"(len)
-        : "rax", "rdi", "rsi", "rdx"
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(2), "b"(fd), "c"(buf), "d"(len)
     );
     return ret;
 }
@@ -25,15 +20,9 @@ static int sys_write(int fd, const char* buf, int len) {
 static int sys_read(int fd, char* buf, int len) {
     int ret;
     asm volatile(
-        "mov $3, %%rax\n"      // SYS_READ
-        "mov %1, %%rdi\n"      // fd
-        "mov %2, %%rsi\n"      // buffer
-        "mov %3, %%rdx\n"      // length
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(ret)
-        : "r"(fd), "r"(buf), "r"(len)
-        : "rax", "rdi", "rsi", "rdx"
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(3), "b"(fd), "c"(buf), "d"(len)
     );
     return ret;
 }
@@ -41,12 +30,9 @@ static int sys_read(int fd, char* buf, int len) {
 static int sys_fork(void) {
     int ret;
     asm volatile(
-        "mov $7, %%rax\n"      // SYS_FORK
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(ret)
-        :
-        : "rax"
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(7)
     );
     return ret;
 }
@@ -54,73 +40,63 @@ static int sys_fork(void) {
 static int sys_wait(int* status) {
     int ret;
     asm volatile(
-        "mov $8, %%rax\n"      // SYS_WAIT
-        "mov %1, %%rdi\n"      // status pointer
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(ret)
-        : "r"(status)
-        : "rax", "rdi"
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(8), "b"(status)
     );
     return ret;
 }
 
 static void sys_exit(int code) {
     asm volatile(
-        "mov $1, %%rax\n"      // SYS_EXIT
-        "mov %0, %%rdi\n"      // exit code
         "int $0x80"
         :
-        : "r"(code)
-        : "rax", "rdi"
+        : "a"(1), "b"(code)
     );
 }
 
 static int sys_execve(const char* path, char* const argv[], char* const envp[]) {
     int ret;
     asm volatile(
-        "mov $9, %%rax\n"      // SYS_EXECVE
-        "mov %1, %%rdi\n"      // path
-        "mov %2, %%rsi\n"      // argv
-        "mov %3, %%rdx\n"      // envp
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(ret)
-        : "r"(path), "r"(argv), "r"(envp)
-        : "rax", "rdi", "rsi", "rdx"
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(9), "b"(path), "c"(argv), "d"(envp)
     );
     return ret;
 }
 
 static void sys_sleep(int ms) {
     asm volatile(
-        "mov $5, %%rax\n"      // SYS_SLEEP
-        "mov %0, %%rdi\n"      // milliseconds
         "int $0x80"
         :
-        : "r"(ms)
-        : "rax", "rdi"
+        : "a"(5), "b"(ms)
     );
 }
 
 static int sys_getpid(void) {
     int ret;
     asm volatile(
-        "mov $4, %%rax\n"      // SYS_GETPID
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(ret)
-        :
-        : "rax"
+        "int $0x80"
+        : "=a"(ret)
+        : "a"(4)
     );
     return ret;
 }
 
 // Simple string length function
 static int str_len(const char* s) {
-    int len = 0;  
+    int len = 0;
     while (s[len]) len++;
     return len;
+}
+
+// Find character in string
+static char* str_chr(const char* s, char c) {
+    while (*s) {
+        if (*s == c) return (char*)s;
+        s++;
+    }
+    return 0;
 }
 
 // Simple string compare function
@@ -244,11 +220,7 @@ void shell_main(void) {
         }
         else if (str_cmp(argv[0], "ps") == 0) {
             // Call the real sys_ps system call
-            asm volatile(
-                "mov $10, %%rax\n"     // SYS_PS
-                "int $0x80"
-                : : : "rax"
-            );
+            asm volatile("int $0x80" : : "a"(10));
         }
         else if (str_cmp(argv[0], "echo") == 0) {
             for (int i = 1; i < argc; i++) {
@@ -313,54 +285,30 @@ void shell_main(void) {
             sys_write(1, "\033[2J\033[H", 7);  // ANSI clear screen
         }
         else if (str_cmp(argv[0], "ls") == 0) {
-            // Open root directory
+            // Open root directory using 32-bit syscall convention
             int fd;
-            asm volatile(
-                "mov $11, %%rax\n"     // SYS_OPEN
-                "lea root_path(%%rip), %%rdi\n"
-                "mov $0, %%rsi\n"      // flags
-                "mov $0, %%rdx\n"      // mode
-                "int $0x80\n"
-                "mov %%rax, %0\n"
-                "jmp ls_done\n"
-                "root_path: .asciz \"/\"\n"
-                "ls_done:"
-                : "=r"(fd) : : "rax", "rdi", "rsi", "rdx"
-            );
-            
+            const char* root = "/";
+            asm volatile("int $0x80" : "=a"(fd) : "a"(11), "b"(root), "c"(0), "d"(0));
+
             if (fd >= 0) {
                 // Read directory entries
                 struct {
                     char name[32];
                     uint32_t type;
                 } dirent;
-                
+
                 while (1) {
                     int ret;
-                    asm volatile(
-                        "mov $15, %%rax\n"     // SYS_READDIR
-                        "mov %1, %%rdi\n"      // fd
-                        "mov %2, %%rsi\n"      // dirent buffer
-                        "int $0x80\n"
-                        "mov %%rax, %0"
-                        : "=r"(ret)
-                        : "r"(fd), "r"(&dirent)
-                        : "rax", "rdi", "rsi"
-                    );
-                    
+                    asm volatile("int $0x80" : "=a"(ret) : "a"(15), "b"(fd), "c"(&dirent));
+
                     if (ret <= 0) break;
-                    
+
                     sys_write(1, dirent.name, str_len(dirent.name));
                     sys_write(1, "\n", 1);
                 }
-                
+
                 // Close directory
-                asm volatile(
-                    "mov $12, %%rax\n"     // SYS_CLOSE
-                    "mov %0, %%rdi\n"      // fd
-                    "int $0x80"
-                    : : "r"(fd) : "rax", "rdi"
-                );
+                asm volatile("int $0x80" : : "a"(12), "b"(fd));
             } else {
                 sys_write(1, "Failed to open directory\n", 25);
             }
@@ -369,48 +317,23 @@ void shell_main(void) {
             if (argc < 2) {
                 sys_write(1, "Usage: cat <filename>\n", 22);
             } else {
-                // Open file
+                // Open file using 32-bit syscall convention
                 int fd;
-                asm volatile(
-                    "mov $11, %%rax\n"     // SYS_OPEN
-                    "mov %1, %%rdi\n"      // filename
-                    "mov $0, %%rsi\n"      // flags (read)
-                    "mov $0, %%rdx\n"      // mode
-                    "int $0x80\n"
-                    "mov %%rax, %0"
-                    : "=r"(fd)
-                    : "r"(argv[1])
-                    : "rax", "rdi", "rsi", "rdx"
-                );
-                
+                asm volatile("int $0x80" : "=a"(fd) : "a"(11), "b"(argv[1]), "c"(0), "d"(0));
+
                 if (fd >= 0) {
                     // Read and display file
                     char buffer[256];
                     while (1) {
                         int bytes;
-                        asm volatile(
-                            "mov $3, %%rax\n"      // SYS_READ
-                            "mov %1, %%rdi\n"      // fd
-                            "mov %2, %%rsi\n"      // buffer
-                            "mov $256, %%rdx\n"    // count
-                            "int $0x80\n"
-                            "mov %%rax, %0"
-                            : "=r"(bytes)
-                            : "r"(fd), "r"(buffer)
-                            : "rax", "rdi", "rsi", "rdx"
-                        );
-                        
+                        asm volatile("int $0x80" : "=a"(bytes) : "a"(3), "b"(fd), "c"(buffer), "d"(256));
+
                         if (bytes <= 0) break;
                         sys_write(1, buffer, bytes);
                     }
-                    
+
                     // Close file
-                    asm volatile(
-                        "mov $12, %%rax\n"     // SYS_CLOSE
-                        "mov %0, %%rdi\n"      // fd
-                        "int $0x80"
-                        : : "r"(fd) : "rax", "rdi"
-                    );
+                    asm volatile("int $0x80" : : "a"(12), "b"(fd));
                 } else {
                     sys_write(1, "File not found: ", 16);
                     sys_write(1, argv[1], str_len(argv[1]));
@@ -433,16 +356,10 @@ void shell_main(void) {
                         break;
                     }
                 }
-                
+
                 if (pid > 0) {
-                    // Send SIGKILL
-                    asm volatile(
-                        "mov $16, %%rax\n"     // SYS_KILL (need to add this)
-                        "mov %0, %%rdi\n"      // pid
-                        "mov $9, %%rsi\n"      // SIGKILL
-                        "int $0x80"
-                        : : "r"(pid) : "rax", "rdi", "rsi"
-                    );
+                    // Send SIGKILL using 32-bit syscall
+                    asm volatile("int $0x80" : : "a"(16), "b"(pid), "c"(9));
                     sys_write(1, "Sent SIGKILL to process ", 24);
                     sys_write(1, argv[1], str_len(argv[1]));
                     sys_write(1, "\n", 1);

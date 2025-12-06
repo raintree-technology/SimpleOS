@@ -15,57 +15,60 @@ typedef enum {
     PROCESS_STATE_TERMINATED
 } process_state_t;
 
-// x86_64 context structure
+// i386 context structure (32-bit)
 typedef struct {
     // Callee-saved registers (must be preserved across function calls)
-    uint64_t r15;
-    uint64_t r14;
-    uint64_t r13;
-    uint64_t r12;
-    uint64_t rbx;
-    uint64_t rbp;
-    
+    uint32_t edi;
+    uint32_t esi;
+    uint32_t ebx;
+    uint32_t ebp;
+
     // Stack pointer
-    uint64_t rsp;
-    
+    uint32_t esp;
+
     // Instruction pointer (return address)
-    uint64_t rip;
-    
-    // RFLAGS register
-    uint64_t rflags;
+    uint32_t eip;
+
+    // EFLAGS register
+    uint32_t eflags;
 } context_t;
 
 // Process Control Block (PCB)
 typedef struct process {
     uint32_t pid;                    // Process ID
     char name[32];                   // Process name
-    
+
     context_t context;               // CPU context
     process_state_t state;           // Current state
-    
-    // Memory management
-    uint64_t* page_table;           // Process's CR3 value (PML4 base)
-    uint64_t heap_start;            // Start of heap (for sbrk)
-    uint64_t heap_current;          // Current heap end
-    uint64_t heap_max;              // Maximum heap size
-    uint64_t stack_bottom;          // Bottom of user stack
-    uint64_t stack_top;             // Top of user stack (grows down)
-    
+
+    // Memory management (32-bit pointers)
+    uint32_t* page_directory;       // Process's CR3 value (page directory base)
+    uint32_t heap_start;            // Start of heap (for sbrk)
+    uint32_t heap_current;          // Current heap end
+    uint32_t heap_max;              // Maximum heap size
+    uint32_t stack_bottom;          // Bottom of user stack
+    uint32_t stack_top;             // Top of user stack (grows down)
+
     // Memory statistics
     size_t pages_allocated;         // Number of pages this process owns
     size_t page_faults;             // Page fault counter
-    
+
     void* kernel_stack;             // Kernel stack base
     size_t kernel_stack_size;       // Kernel stack size
-    
-    uint64_t ticks_total;           // Total CPU ticks used
-    uint64_t ticks_remaining;       // Ticks left in current quantum
+
+    uint32_t ticks_total;           // Total CPU ticks used
+    uint32_t ticks_remaining;       // Ticks left in current quantum
     uint32_t priority;              // Process priority (0 = highest)
     
     // Process relationships
     uint32_t parent_pid;            // Parent process ID
     int exit_status;                // Exit status (for zombie processes)
-    
+
+    // Signal handling
+    uint32_t pending_signals;       // Bitmask of pending signals
+    uint32_t signal_mask;           // Bitmask of blocked signals
+    void* signal_handlers[32];      // Signal handlers (SIG_DFL, SIG_IGN, or function pointer)
+
     // File descriptors (per-process)
     void* fd_table;                 // Pointer to process's file descriptor table
     

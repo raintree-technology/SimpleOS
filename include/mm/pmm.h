@@ -14,7 +14,7 @@
 #define PAGE_ALIGN_UP(x) (((x) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
 
 // Initialize physical memory manager
-void pmm_init(uint64_t memory_size);
+void pmm_init(uint32_t memory_size);
 
 // Allocate a single physical page
 void* pmm_alloc_page(void);

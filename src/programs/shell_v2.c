@@ -1,4 +1,12 @@
 #include "../../include/string.h"
+#include <stdint.h>
+
+// Forward declarations
+static int sys_write(int fd, const char* buf, int len);
+static int str_len(const char* s);
+static void int_to_str(int num, char* buf);
+static int sys_pipe(int pipefd[2]);
+static int sys_dup2(int oldfd, int newfd);
 
 #define MAX_CMD_LEN 256
 #define MAX_ARGS 16
@@ -45,19 +53,6 @@ typedef struct {
 static job_t jobs[MAX_JOBS];
 static int next_job_id = 1;
 static int jobs_initialized = 0;
-
-// Simple strncpy implementation
-static void strncpy(char* dest, const char* src, int n) {
-    int i = 0;
-    while (i < n - 1 && src[i]) {
-        dest[i] = src[i];
-        i++;
-    }
-    while (i < n) {
-        dest[i] = '\0';
-        i++;
-    }
-}
 
 static void jobs_init(void) {
     for (int i = 0; i < MAX_JOBS; i++) {

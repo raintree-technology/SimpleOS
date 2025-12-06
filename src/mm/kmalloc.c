@@ -10,9 +10,9 @@ typedef struct block {
     bool free;
 } block_t;
 
-// Heap configuration
-#define HEAP_START 0x2000000
-#define HEAP_SIZE  0x1000000  // 16MB
+// Heap configuration - must match kernel.c and be within mapped memory (first 4MB)
+#define HEAP_START 0x200000   // 2MB
+#define HEAP_SIZE  0x180000   // 1.5MB
 #define BLOCK_HEADER_SIZE sizeof(block_t)
 #define MIN_BLOCK_SIZE 16
 

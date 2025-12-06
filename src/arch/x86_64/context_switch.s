@@ -1,73 +1,84 @@
-# Context switching code for x86_64
+# Context switching code for i386 (32-bit)
 # void context_switch(context_t* old_context, context_t* new_context)
 #
-# Parameters:
-#   %rdi - pointer to old context structure to save current state
-#   %rsi - pointer to new context structure to load
+# Parameters (on stack - cdecl calling convention):
+#   [esp+4] - pointer to old context structure to save current state
+#   [esp+8] - pointer to new context structure to load
+#
+# Context structure layout (32-bit, 4 bytes each):
+#   offset 0:  edi
+#   offset 4:  esi
+#   offset 8:  ebx
+#   offset 12: ebp
+#   offset 16: esp
+#   offset 20: eip
+#   offset 24: eflags
 
 .global context_switch
 .type context_switch, @function
 
 context_switch:
-    # Save old context
+    # Get parameters from stack
+    movl 4(%esp), %eax          # old_context pointer
+    movl 8(%esp), %edx          # new_context pointer
+
     # Check if old_context is NULL (initial switch)
-    test %rdi, %rdi
+    testl %eax, %eax
     jz load_new_context
-    
-    # Save callee-saved registers
-    movq %r15, 0(%rdi)      # r15
-    movq %r14, 8(%rdi)      # r14
-    movq %r13, 16(%rdi)     # r13
-    movq %r12, 24(%rdi)     # r12
-    movq %rbx, 32(%rdi)     # rbx
-    movq %rbp, 40(%rdi)     # rbp
-    
+
+    # Save callee-saved registers to old context
+    movl %edi, 0(%eax)          # edi
+    movl %esi, 4(%eax)          # esi
+    movl %ebx, 8(%eax)          # ebx
+    movl %ebp, 12(%eax)         # ebp
+
     # Save stack pointer
-    movq %rsp, 48(%rdi)     # rsp
-    
+    movl %esp, 16(%eax)         # esp
+
     # Save return address (instruction pointer)
-    movq (%rsp), %rax       # Get return address from stack
-    movq %rax, 56(%rdi)     # rip
-    
-    # Save RFLAGS
-    pushfq
-    popq %rax
-    movq %rax, 64(%rdi)     # rflags
+    movl (%esp), %ecx           # Get return address from stack
+    movl %ecx, 20(%eax)         # eip
+
+    # Save EFLAGS
+    pushfl
+    popl %ecx
+    movl %ecx, 24(%eax)         # eflags
 
 load_new_context:
     # Load new context
     # Restore callee-saved registers
-    movq 0(%rsi), %r15      # r15
-    movq 8(%rsi), %r14      # r14
-    movq 16(%rsi), %r13     # r13
-    movq 24(%rsi), %r12     # r12
-    movq 32(%rsi), %rbx     # rbx
-    movq 40(%rsi), %rbp     # rbp
-    
-    # Restore RFLAGS
-    movq 64(%rsi), %rax     # rflags
-    pushq %rax
-    popfq
-    
+    movl 0(%edx), %edi          # edi
+    movl 4(%edx), %esi          # esi
+    movl 8(%edx), %ebx          # ebx
+    movl 12(%edx), %ebp         # ebp
+
+    # Restore EFLAGS
+    movl 24(%edx), %ecx         # eflags
+    pushl %ecx
+    popfl
+
     # Restore stack pointer
-    movq 48(%rsi), %rsp     # rsp
-    
+    movl 16(%edx), %esp         # esp
+
     # Jump to new context (simulate return)
-    movq 56(%rsi), %rax     # rip
-    jmp *%rax
+    movl 20(%edx), %eax         # eip
+    jmp *%eax
 
 # Entry point for new processes
 .global process_entry_trampoline
 .type process_entry_trampoline, @function
 
 process_entry_trampoline:
-    # The entry point address is in %rdi (first argument)
-    call *%rdi
-    
+    # In 32-bit cdecl, the entry point address is passed on stack
+    # But for simplicity, we'll use a register setup
+    # The entry point was put in edi before context switch
+    call *%edi
+
     # Process returned, call exit
-    movq $0, %rdi           # Exit status 0
+    pushl $0                    # Exit status 0
     call process_exit
-    
+    addl $4, %esp               # Clean up (though we won't get here)
+
     # Should never reach here
 1:  hlt
     jmp 1b

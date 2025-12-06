@@ -2,29 +2,24 @@
    It specifies the entry point and organizes various sections of the kernel in memory. */
 
 /* SimpleOS/linker.ld */
-OUTPUT_FORMAT("elf64-x86-64")
+OUTPUT_FORMAT("elf32-i386")
 ENTRY(_start)
 
 SECTIONS {
     . = 1M;
 
-    .boot : {
-        *(.multiboot)
-    }
-
+    /* All loadable content in one contiguous block starting at 1M */
     .text : {
+        KEEP(*(.multiboot))
         *(.text)
-    }
-
-    .rodata : {
         *(.rodata)
     }
 
-    .data : {
+    .data ALIGN(4K) : {
         *(.data)
     }
 
-    .bss : {
+    .bss ALIGN(16) : {
         *(COMMON)
         *(.bss)
     }

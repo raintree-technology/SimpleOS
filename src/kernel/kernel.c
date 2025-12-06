@@ -5,6 +5,19 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "../include/terminal.h"
+
+// Serial debug output (COM1 = 0x3F8)
+static inline void serial_char(char c) {
+    asm volatile("outb %0, %1" : : "a"(c), "Nd"((uint16_t)0x3F8));
+}
+
+static inline void serial_str(const char* s) {
+    while (*s) {
+        serial_char(*s++);
+    }
+}
+
+#define DEBUG_SERIAL(msg) serial_str(msg)
 #include "../include/isr.h"
 #include "../include/ports.h"
 #include "../include/timer.h"
@@ -20,7 +33,7 @@
 #include "../include/pmm.h"
 #include "../include/vmm.h"
 #include "../include/elf.h"
-#include "../include/scheduler.h"
+#include "../include/signal.h"
 #include "../include/../userspace/hello_binary.h"
 
 // External assembly functions
@@ -42,132 +55,68 @@ void vt_init(void);
 
 // Memory management
 #define PAGE_SIZE 4096
-#define ENTRIES_PER_TABLE 512
+#define ENTRIES_PER_TABLE 1024  // 32-bit uses 1024 entries
 
-// Page tables - make pml4 globally accessible for VMM
-uint64_t* pml4 = (uint64_t*)0x1000000;
-uintptr_t* pdpt = (uintptr_t*)0x1001000;
-uintptr_t* pd = (uintptr_t*)0x1002000;
-uintptr_t* pt = (uintptr_t*)0x1003000;
+// Page tables for 32-bit (2-level paging)
+// Allocate in BSS to avoid address conflicts with kernel
+// These MUST be page-aligned (4KB boundary)
+// We need 16 page tables to map 64MB (16 * 4MB = 64MB)
+#define NUM_PAGE_TABLES 16
+static uint32_t page_directory_storage[1024] __attribute__((aligned(4096)));
+static uint32_t page_tables_storage[NUM_PAGE_TABLES][1024] __attribute__((aligned(4096)));
+uint32_t* page_directory = page_directory_storage;
 
-// Heap configuration
-#define HEAP_START 0x2000000
-#define HEAP_SIZE 0x1000000
-uint8_t* heap_start = (uint8_t*)HEAP_START; 
+// Heap configuration - must be within mapped memory (first 4MB)
+// Kernel ends around 1.6MB, so start heap at 2MB
+#define HEAP_START 0x200000   // 2MB
+#define HEAP_SIZE  0x180000   // 1.5MB (fits within first 4MB)
+uint8_t* heap_start = (uint8_t*)HEAP_START;
 uint8_t* heap_end = (uint8_t*)(HEAP_START + HEAP_SIZE);
 uint8_t* heap_current = (uint8_t*)HEAP_START;
 
-// Simple memory allocator
-void* kmalloc(size_t size) {
-    if (heap_current + size > heap_end) {
-        return NULL;  // Out of memory
-    }
-    void* result = (void*)heap_current;
-    heap_current += size;
-    return result;
-}
+// kmalloc is implemented in mm/kmalloc.c
 
 // Test processes for multitasking demo
 void test_process_1(void) {
     int counter = 0;
     while(1) {
         terminal_writestring("[Process 1] Running - count: ");
-        // TODO: Print counter
+        terminal_print_int(counter);
         terminal_writestring("\n");
         counter++;
         sleep_ms(1000);  // Sleep for 1 second
     }
 }
 
-// Test process for memory isolation
+// Test process for memory isolation (simplified for 32-bit)
 void test_memory_process(void) {
     terminal_writestring("[Memory Test] Process starting\n");
-    
-    // Test sbrk allocation
-    void* heap_ptr = (void*)0;
-    asm volatile(
-        "mov $6, %%rax\n"      // SYS_SBRK
-        "mov $4096, %%rdi\n"   // Allocate 4KB
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(heap_ptr) : : "rax", "rdi"
-    );
-    
-    if (heap_ptr != (void*)-1) {
-        terminal_writestring("[Memory Test] Allocated heap at: ");
-        // TODO: Print address
-        terminal_writestring("\n");
-        
-        // Write to allocated memory
-        char* buffer = (char*)heap_ptr;
-        const char* test_msg = "Hello from process heap!";
-        
-        // Copy test message to heap
-        for (int i = 0; test_msg[i] && i < 25; i++) {
-            buffer[i] = test_msg[i];
-        }
-        buffer[25] = '\0';
-        
-        terminal_writestring("[Memory Test] Wrote to heap: ");
-        terminal_writestring(buffer);
-        terminal_writestring("\n");
-    } else {
-        terminal_writestring("[Memory Test] Failed to allocate heap!\n");
-    }
-    
-    // Test stack allocation
+
+    // Test stack allocation only (syscalls removed for initial 32-bit port)
     char stack_buffer[1024];
     const char* stack_msg = "Stack allocation works!";
     for (int i = 0; stack_msg[i] && i < 23; i++) {
         stack_buffer[i] = stack_msg[i];
     }
     stack_buffer[23] = '\0';
-    
+
     terminal_writestring("[Memory Test] Stack test: ");
     terminal_writestring(stack_buffer);
     terminal_writestring("\n");
-    
+
     while(1) {
         terminal_writestring("[Memory Test] Process running...\n");
         sleep_ms(3000);
     }
 }
 
-// Test process using system calls
+// Test process using system calls (simplified for 32-bit)
 void test_syscall_process(void) {
-    // Test write syscall
-    const char* msg = "Hello from syscall process!\n";
-    asm volatile(
-        "mov $2, %%rax\n"      // SYS_WRITE
-        "mov $1, %%rdi\n"      // stdout
-        "mov %0, %%rsi\n"      // buffer
-        "mov $28, %%rdx\n"     // length
-        "int $0x80"
-        : : "r"(msg) : "rax", "rdi", "rsi", "rdx"
-    );
-    
-    // Test getpid syscall
-    uint64_t pid;
-    asm volatile(
-        "mov $4, %%rax\n"      // SYS_GETPID
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(pid) : : "rax"
-    );
-    
-    terminal_writestring("My PID from syscall: ");
-    // TODO: Print PID
-    terminal_writestring("\n");
-    
-    // Test sleep syscall
+    terminal_writestring("[Syscall Process] Starting\n");
+
     while(1) {
-        terminal_writestring("[Syscall Process] Using sys_sleep...\n");
-        asm volatile(
-            "mov $5, %%rax\n"      // SYS_SLEEP
-            "mov $2000, %%rdi\n"   // 2000ms
-            "int $0x80"
-            : : : "rax", "rdi"
-        );
+        terminal_writestring("[Syscall Process] Running...\n");
+        sleep_ms(2000);
     }
 }
 
@@ -175,7 +124,7 @@ void test_process_2(void) {
     int counter = 0;
     while(1) {
         terminal_writestring("[Process 2] Running - count: ");
-        // TODO: Print counter
+        terminal_print_int(counter);
         terminal_writestring("\n");
         counter++;
         sleep_ms(1500);  // Sleep for 1.5 seconds
@@ -186,7 +135,7 @@ void test_process_3(void) {
     while(1) {
         terminal_writestring("[Process 3] Computing...\n");
         // CPU-intensive task
-        volatile uint64_t sum = 0;
+        volatile uint32_t sum = 0;
         for (volatile int i = 0; i < 10000000; i++) {
             sum += i;
         }
@@ -201,7 +150,7 @@ void test_elf_loader(void) {
     
     // Test ELF validation with our minimal binary
     terminal_writestring("ELF binary size: ");
-    // TODO: Print hello_elf_len
+    terminal_print_uint(hello_elf_len);
     terminal_writestring(" bytes\n");
     
     // Try to create process from ELF
@@ -215,7 +164,7 @@ void test_elf_loader(void) {
     if (proc) {
         terminal_writestring("ELF process created successfully!\n");
         terminal_writestring("Entry point: ");
-        // TODO: Print entry point address
+        terminal_print_hex((uint32_t)(uintptr_t)proc->entry_point);
         terminal_writestring("\n");
         terminal_writestring("Process should be ready to run\n");
     } else {
@@ -242,15 +191,13 @@ struct gdt_ptr {
 struct gdt_entry gdt[GDT_ENTRIES];
 struct gdt_ptr gp;
 
-// IDT structures
+// IDT structures (32-bit)
 struct idt_entry {
     uint16_t offset_low;
     uint16_t selector;
-    uint8_t ist;
+    uint8_t zero;
     uint8_t type_attr;
-    uint16_t offset_middle;
-    uint32_t offset_high;
-    uint32_t zero;
+    uint16_t offset_high;
 } __attribute__((packed));
 
 struct idt_ptr {
@@ -304,27 +251,14 @@ void gdt_set_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_
     gdt[num].access = access;
 }
 
-// Set up a TSS descriptor (uses 2 GDT entries in long mode)
-void gdt_set_tss(int num, uint64_t base, uint32_t limit) {
-    // TSS descriptor is 16 bytes (uses two GDT entries)
-    struct gdt_entry* tss_low = &gdt[num];
-    struct gdt_entry* tss_high = &gdt[num + 1];
-    
-    // Low 64 bits
-    tss_low->limit_low = limit & 0xFFFF;
-    tss_low->base_low = base & 0xFFFF;
-    tss_low->base_middle = (base >> 16) & 0xFF;
-    tss_low->access = 0x89;  // Present, ring 0, 64-bit TSS
-    tss_low->granularity = ((limit >> 16) & 0x0F) | 0x00;
-    tss_low->base_high = (base >> 24) & 0xFF;
-    
-    // High 64 bits (extended base address for 64-bit)
-    tss_high->limit_low = (base >> 32) & 0xFFFF;
-    tss_high->base_low = (base >> 48) & 0xFFFF;
-    tss_high->base_middle = 0;
-    tss_high->access = 0;
-    tss_high->granularity = 0;
-    tss_high->base_high = 0;
+// Set up a TSS descriptor (32-bit - uses 1 GDT entry)
+void gdt_set_tss(int num, uint32_t base, uint32_t limit) {
+    gdt[num].base_low = base & 0xFFFF;
+    gdt[num].base_middle = (base >> 16) & 0xFF;
+    gdt[num].base_high = (base >> 24) & 0xFF;
+    gdt[num].limit_low = limit & 0xFFFF;
+    gdt[num].granularity = (limit >> 16) & 0x0F;
+    gdt[num].access = 0x89;  // Present, ring 0, 32-bit TSS
 }
 
 // Initialize GDT
@@ -333,18 +267,18 @@ void init_gdt(void) {
     gp.base = (uintptr_t)&gdt;
 
     gdt_set_gate(0, 0, 0, 0, 0);                // Null segment
-    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xAF); // Kernel code segment (ring 0)
-    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); // Kernel data segment (ring 0)
-    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xAF); // User code segment (ring 3)
-    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); // User data segment (ring 3)
+    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF); // Kernel code segment (ring 0, 32-bit)
+    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF); // Kernel data segment (ring 0, 32-bit)
+    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF); // User code segment (ring 3, 32-bit)
+    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF); // User data segment (ring 3, 32-bit)
     
     // TSS will be set up after GDT is loaded
     
     load_gdt((uintptr_t)&gp);
     
-    // Now set up TSS (entries 5-6)
+    // Now set up TSS (entry 5 only in 32-bit)
     extern tss_t tss;
-    gdt_set_tss(5, (uint64_t)&tss, sizeof(tss_t) - 1);
+    gdt_set_tss(5, (uint32_t)&tss, sizeof(tss_t) - 1);
     
     // Reload GDT to include TSS
     load_gdt((uintptr_t)&gp);
@@ -353,15 +287,13 @@ void init_gdt(void) {
     asm volatile("ltr %0" : : "r"((uint16_t)0x28));
 }
 
-// Set up an IDT entry
+// Set up an IDT entry (32-bit)
 void idt_set_gate(uint8_t num, uintptr_t base, uint16_t sel, uint8_t flags) {
     idt[num].offset_low = base & 0xFFFF;
-    idt[num].offset_middle = (base >> 16) & 0xFFFF;
-    idt[num].offset_high = (base >> 32) & 0xFFFFFFFF;
+    idt[num].offset_high = (base >> 16) & 0xFFFF;
     idt[num].selector = sel;
     idt[num].zero = 0;
     idt[num].type_attr = flags;
-    idt[num].ist = 0;
 }
 
 // Initialize IDT
@@ -428,16 +360,25 @@ void init_pic(void) {
     outb(0xA1, 0xFF);  // Slave PIC: Disable all
 }
 
-// Set up paging for 64-bit long mode
+// Set up paging for 32-bit protected mode
 void init_paging(void) {
-    for (int i = 0; i < ENTRIES_PER_TABLE; i++) {
-        pt[i] = (i * PAGE_SIZE) | 3; // Present + Writable
+    // Identity map first 64MB using 16 page tables (each maps 4MB)
+    for (int pt = 0; pt < NUM_PAGE_TABLES; pt++) {
+        // Fill each page table with identity mappings
+        for (int i = 0; i < ENTRIES_PER_TABLE; i++) {
+            uint32_t phys_addr = (pt * ENTRIES_PER_TABLE + i) * PAGE_SIZE;
+            page_tables_storage[pt][i] = phys_addr | 3; // Present + Writable
+        }
+        // Add page table to page directory
+        page_directory[pt] = (uintptr_t)page_tables_storage[pt] | 3;
     }
-    pd[0] = (uintptr_t)pt | 3;
-    pdpt[0] = (uintptr_t)pd | 3;
-    pml4[0] = (uintptr_t)pdpt | 3;
 
-    enable_paging((uintptr_t*)pml4);
+    // Clear rest of page directory
+    for (int i = NUM_PAGE_TABLES; i < ENTRIES_PER_TABLE; i++) {
+        page_directory[i] = 0;
+    }
+
+    enable_paging((uintptr_t*)page_directory);
 }
 
 // ISR handler
@@ -454,40 +395,87 @@ void isr_handler(registers_t* regs) {
         handler(regs);
     } else {
         terminal_writestring("Unhandled interrupt: ");
-        // TODO: Print interrupt number
+        terminal_print_uint(regs->int_no);
         terminal_writestring("\n");
     }
 }
 
 // Kernel main function
 void kernel_main(void) {
+    DEBUG_SERIAL("[K] kernel_main entered\n");
+
     // Initialize core systems
+    DEBUG_SERIAL("[K] init_vga...\n");
     init_vga();
+    DEBUG_SERIAL("[K] init_vga done\n");
     terminal_writestring("SimpleOS v0.2 - Now with Multitasking!\n");
     terminal_writestring("=====================================\n\n");
-    
+
     // Initialize physical memory manager
-    // For now, assume we have 64MB of physical memory starting at 2MB
-    // This is a simple assumption - real OS would get this from multiboot
+    DEBUG_SERIAL("[K] pmm_init...\n");
     pmm_init(64 * 1024 * 1024);  // 64MB
-    
+    DEBUG_SERIAL("[K] pmm_init done\n");
+
+    // Initialize TSS BEFORE GDT (GDT setup loads TSS register)
+    DEBUG_SERIAL("[K] tss_init...\n");
+    tss_init();
+    DEBUG_SERIAL("[K] tss_init done\n");
+
+    DEBUG_SERIAL("[K] init_gdt...\n");
     init_gdt();
-    tss_init();  // Initialize TSS before loading GDT with TSS
+    DEBUG_SERIAL("[K] init_gdt done\n");
+
+    DEBUG_SERIAL("[K] init_pic...\n");
     init_pic();
+    DEBUG_SERIAL("[K] init_pic done\n");
+
+    DEBUG_SERIAL("[K] init_idt...\n");
     init_idt();
-    init_exceptions();  // Initialize exception handlers
+    DEBUG_SERIAL("[K] init_idt done\n");
+
+    DEBUG_SERIAL("[K] init_exceptions...\n");
+    init_exceptions();
+    DEBUG_SERIAL("[K] init_exceptions done\n");
+
+    DEBUG_SERIAL("[K] init_paging...\n");
     init_paging();
+    DEBUG_SERIAL("[K] init_paging done\n");
+
+    DEBUG_SERIAL("[K] init_timer...\n");
     init_timer(100);  // 100 Hz = 10ms ticks
-    
+    DEBUG_SERIAL("[K] init_timer done\n");
+
     // Initialize process and scheduling
+    DEBUG_SERIAL("[K] process_init...\n");
     process_init();
+    DEBUG_SERIAL("[K] process_init done\n");
+
+    DEBUG_SERIAL("[K] scheduler_init...\n");
     scheduler_init();
-    
+    DEBUG_SERIAL("[K] scheduler_init done\n");
+
+    DEBUG_SERIAL("[K] signal_init...\n");
+    signal_init();
+    DEBUG_SERIAL("[K] signal_init done\n");
+
+    DEBUG_SERIAL("[K] init_keyboard...\n");
     init_keyboard();
-    init_syscalls();  // Initialize system call interface
-    fs_init();        // Initialize filesystem
-    vt_init();        // Initialize virtual terminals
-    terminal_enable_vt(); // Enable VT mode
+    DEBUG_SERIAL("[K] init_keyboard done\n");
+
+    DEBUG_SERIAL("[K] init_syscalls...\n");
+    init_syscalls();
+    DEBUG_SERIAL("[K] init_syscalls done\n");
+
+    DEBUG_SERIAL("[K] fs_init...\n");
+    fs_init();
+    DEBUG_SERIAL("[K] fs_init done\n");
+
+    DEBUG_SERIAL("[K] vt_init...\n");
+    vt_init();
+    DEBUG_SERIAL("[K] vt_init done\n");
+
+    terminal_enable_vt();
+    DEBUG_SERIAL("[K] All init complete!\n");
     
     terminal_writestring("System initialized. Creating test processes...\n\n");
     terminal_writestring("Press Alt+F1 through Alt+F4 to switch virtual terminals\n\n");
@@ -527,22 +515,12 @@ void kernel_main(void) {
             } else if (c == 'f') {
                 // Test page fault by accessing invalid memory
                 terminal_writestring("\nTriggering page fault test...\n");
-                volatile uint64_t* bad_ptr = (uint64_t*)0xDEADBEEF000;
+                volatile uint32_t* bad_ptr = (uint32_t*)0xDEADBEEF;
                 *bad_ptr = 42;  // This will page fault
             } else if (c == 't') {
-                // Test system call from kernel
-                terminal_writestring("\nTesting direct syscall from kernel...\n");
-                asm volatile(
-                    "mov $2, %%rax\n"      // SYS_WRITE
-                    "mov $1, %%rdi\n"      // stdout
-                    "lea msg(%%rip), %%rsi\n"
-                    "mov $19, %%rdx\n"     // length
-                    "int $0x80\n"
-                    "jmp done\n"
-                    "msg: .ascii \"Syscall works!\\n\\0\\0\\0\\0\"\n"
-                    "done:"
-                    : : : "rax", "rdi", "rsi", "rdx"
-                );
+                // Test system call from kernel (simplified for 32-bit)
+                terminal_writestring("\nSyscall test (simplified for 32-bit)\n");
+                terminal_writestring("Syscalls use int $0x80 with 32-bit cdecl convention\n");
             } else if (c == 'u') {
                 // Test user mode
                 terminal_writestring("\nTesting user mode...\n");
@@ -577,91 +555,14 @@ void test_fork_exec(void) {
     }
 }
 
-// Test program that demonstrates fork
+// Test program that demonstrates fork (simplified for 32-bit)
 void fork_test_main(void) {
     terminal_writestring("[FORK_TEST] Starting fork test\n");
-    
-    // Get our PID
-    uint64_t my_pid;
-    asm volatile(
-        "mov $4, %%rax\n"      // SYS_GETPID
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(my_pid) : : "rax"
-    );
-    
-    terminal_writestring("[FORK_TEST] My PID is: ");
-    // TODO: Print PID
-    terminal_writestring("\n");
-    
-    // Fork a child
-    int64_t pid;
-    asm volatile(
-        "mov $7, %%rax\n"      // SYS_FORK
-        "int $0x80\n"
-        "mov %%rax, %0"
-        : "=r"(pid) : : "rax"
-    );
-    
-    if (pid == 0) {
-        // Child process
-        terminal_writestring("[CHILD] I'm the child process!\n");
-        
-        // Try to exec a program
-        const char* path = "/bin/hello";
-        asm volatile(
-            "mov $9, %%rax\n"      // SYS_EXECVE
-            "mov %0, %%rdi\n"      // path
-            "mov $0, %%rsi\n"      // argv (NULL)
-            "mov $0, %%rdx\n"      // envp (NULL) 
-            "int $0x80"
-            : : "r"(path) : "rax", "rdi", "rsi", "rdx"
-        );
-        
-        // If exec fails, exit
-        terminal_writestring("[CHILD] Exec failed, exiting\n");
-        asm volatile(
-            "mov $1, %%rax\n"      // SYS_EXIT
-            "mov $1, %%rdi\n"      // exit code
-            "int $0x80"
-            : : : "rax", "rdi"
-        );
-    } else if (pid > 0) {
-        // Parent process
-        terminal_writestring("[PARENT] Created child with PID: ");
-        // TODO: Print child PID
-        terminal_writestring("\n");
-        
-        // Wait for child
-        int status;
-        int64_t child_pid;
-        asm volatile(
-            "mov $8, %%rax\n"      // SYS_WAIT
-            "mov %1, %%rdi\n"      // status pointer
-            "int $0x80\n"
-            "mov %%rax, %0"
-            : "=r"(child_pid) : "r"(&status) : "rax", "rdi"
-        );
-        
-        terminal_writestring("[PARENT] Child exited with status: ");
-        // TODO: Print status
-        terminal_writestring("\n");
-        
-        // Exit parent
-        asm volatile(
-            "mov $1, %%rax\n"      // SYS_EXIT
-            "mov $0, %%rdi\n"      // exit code
-            "int $0x80"
-            : : : "rax", "rdi"
-        );
-    } else {
-        terminal_writestring("[FORK_TEST] Fork failed!\n");
-        asm volatile(
-            "mov $1, %%rax\n"      // SYS_EXIT
-            "mov $1, %%rdi\n"      // exit code
-            "int $0x80"
-            : : : "rax", "rdi"
-        );
+    terminal_writestring("[FORK_TEST] Fork/exec demo disabled in initial 32-bit port\n");
+
+    while(1) {
+        terminal_writestring("[FORK_TEST] Process running...\n");
+        sleep_ms(3000);
     }
 }
 

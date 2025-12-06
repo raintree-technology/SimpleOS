@@ -1,16 +1,27 @@
 // This header file defines structures and functions for handling interrupt service routines (ISRs).
 // It provides a mechanism for registering custom interrupt handlers and a structure to represent CPU registers during an interrupt.
+// 32-bit version for i386
 
 #ifndef ISR_H
 #define ISR_H
 
 #include <stdint.h>
 
+// Register structure pushed by isr_common_stub (32-bit)
+// Must match the order in asm_functions.s
 typedef struct {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rdi, rsi, rbp, rbx, rdx, rcx, rax;
-    uint64_t int_no, err_code;
-    uint64_t rip, cs, rflags, rsp, ss;
+    // Segment registers (pushed by isr_common_stub)
+    uint32_t gs, fs, es, ds;
+
+    // General purpose registers (pushed by pushal)
+    // pushal order: eax, ecx, edx, ebx, esp, ebp, esi, edi
+    uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
+
+    // Pushed by ISR stub
+    uint32_t int_no, err_code;
+
+    // Pushed by CPU on interrupt
+    uint32_t eip, cs, eflags, esp, ss;
 } registers_t;
 
 // IRQ definitions
@@ -36,4 +47,4 @@ typedef void (*isr_t)(registers_t*);
 void register_interrupt_handler(uint8_t n, isr_t handler);
 void isr_handler(registers_t* regs);
 
-#endif 
+#endif

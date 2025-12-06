@@ -7,11 +7,11 @@
 
 // Start managing memory after 4MB (kernel and initial structures)
 #define PMM_START 0x400000
-#define BITMAP_SIZE (128 * 1024)  // Support up to 4GB of RAM (128KB bitmap)
+#define BITMAP_SIZE (8 * 1024)  // Support up to 256MB of RAM (8KB bitmap, more reasonable for v86)
 
 static uint32_t pmm_bitmap[BITMAP_SIZE / 4];  // Bitmap of free pages
 static size_t pmm_total_pages = 0;
-static size_t pmm_free_pages = 0;
+static size_t pmm_free_page_count = 0;
 static size_t pmm_reserved_pages = 0;
 
 // Find first free page in bitmap
@@ -51,7 +51,7 @@ static bool bitmap_test(size_t page) {
 }
 
 // Initialize physical memory manager
-void pmm_init(uint64_t memory_size) {
+void pmm_init(uint32_t memory_size) {
     // Calculate total pages
     pmm_total_pages = memory_size / PAGE_SIZE;
     
@@ -68,17 +68,18 @@ void pmm_init(uint64_t memory_size) {
         last_page = BITMAP_SIZE * 32;  // Limit to bitmap size
     }
     
-    pmm_free_pages = 0;
+    pmm_free_page_count = 0;
     for (size_t page = first_free_page; page < last_page; page++) {
         bitmap_clear(page);
-        pmm_free_pages++;
+        pmm_free_page_count++;
     }
     
     pmm_reserved_pages = first_free_page;  // Pages before PMM_START
     
     terminal_writestring("PMM initialized: ");
-    // TODO: Print memory stats
+    terminal_print_uint((pmm_total_pages * PAGE_SIZE) / (1024 * 1024));
     terminal_writestring(" MB total, ");
+    terminal_print_uint((pmm_free_page_count * PAGE_SIZE) / (1024 * 1024));
     terminal_writestring(" MB free\n");
 }
 
@@ -90,21 +91,21 @@ void* pmm_alloc_page(void) {
     }
     
     bitmap_set(page);
-    pmm_free_pages--;
-    
+    pmm_free_page_count--;
+
     // Clear the page
-    uint64_t addr = (uint64_t)page * PAGE_SIZE;
-    uint64_t* ptr = (uint64_t*)addr;
-    for (int i = 0; i < PAGE_SIZE / 8; i++) {
+    uint32_t addr = (uint32_t)page * PAGE_SIZE;
+    uint32_t* ptr = (uint32_t*)addr;
+    for (int i = 0; i < PAGE_SIZE / 4; i++) {
         ptr[i] = 0;
     }
-    
+
     return (void*)addr;
 }
 
 // Free a physical page
 void pmm_free_page(void* page_addr) {
-    uint64_t addr = (uint64_t)page_addr;
+    uint32_t addr = (uint32_t)page_addr;
     
     // Validate address
     if (addr % PAGE_SIZE != 0 || addr < PMM_START) {
@@ -124,7 +125,7 @@ void pmm_free_page(void* page_addr) {
     }
     
     bitmap_clear(page);
-    pmm_free_pages++;
+    pmm_free_page_count++;
 }
 
 // Allocate multiple contiguous pages
@@ -148,15 +149,15 @@ void* pmm_alloc_pages(size_t count) {
             for (size_t i = 0; i < count; i++) {
                 bitmap_set(start + i);
             }
-            pmm_free_pages -= count;
-            
+            pmm_free_page_count -= count;
+
             // Clear the pages
-            uint64_t addr = start * PAGE_SIZE;
-            uint64_t* ptr = (uint64_t*)addr;
-            for (size_t i = 0; i < count * PAGE_SIZE / 8; i++) {
+            uint32_t addr = start * PAGE_SIZE;
+            uint32_t* ptr = (uint32_t*)addr;
+            for (size_t i = 0; i < count * PAGE_SIZE / 4; i++) {
                 ptr[i] = 0;
             }
-            
+
             return (void*)addr;
         }
     }
@@ -167,10 +168,9 @@ void* pmm_alloc_pages(size_t count) {
 // Free multiple contiguous pages
 void pmm_free_pages(void* page_addr, size_t count) {
     if (count == 0) return;
-    
-    uint64_t addr = (uint64_t)page_addr;
-    size_t start_page = addr / PAGE_SIZE;
-    
+
+    uint32_t addr = (uint32_t)page_addr;
+
     for (size_t i = 0; i < count; i++) {
         pmm_free_page((void*)(addr + i * PAGE_SIZE));
     }
@@ -179,6 +179,6 @@ void pmm_free_pages(void* page_addr, size_t count) {
 // Get memory statistics
 void pmm_get_stats(size_t* total_pages, size_t* free_pages, size_t* used_pages) {
     if (total_pages) *total_pages = pmm_total_pages;
-    if (free_pages) *free_pages = pmm_free_pages;
-    if (used_pages) *used_pages = pmm_total_pages - pmm_free_pages;
+    if (free_pages) *free_pages = pmm_free_page_count;
+    if (used_pages) *used_pages = pmm_total_pages - pmm_free_page_count;
 }

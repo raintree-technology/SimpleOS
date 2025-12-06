@@ -6,6 +6,8 @@
 #include "../include/tss.h"
 #include "../include/vmm.h"
 #include "../include/pmm.h"
+#include "../include/signal.h"
+#include "../include/string.h"
 
 // From syscall.c
 extern void init_process_fd_table(process_t* proc);
@@ -92,10 +94,10 @@ void process_init(void) {
     idle_process.ticks_remaining = 1;
     idle_process.entry_point = idle_task;
     
-    // Set up idle process context
-    idle_process.context.rsp = (uint64_t)(idle_stack + KERNEL_STACK_SIZE);
-    idle_process.context.rip = (uint64_t)idle_task;
-    idle_process.context.rflags = 0x202;  // Interrupts enabled
+    // Set up idle process context (32-bit)
+    idle_process.context.esp = (uint32_t)(idle_stack + KERNEL_STACK_SIZE);
+    idle_process.context.eip = (uint32_t)idle_task;
+    idle_process.context.eflags = 0x202;  // Interrupts enabled
     
     // Idle process is always in table[0]
     process_table[0] = &idle_process;
@@ -149,26 +151,26 @@ process_t* process_create(const char* name, void (*entry_point)(void), uint32_t 
     proc->entry_point = entry_point;
     
     // Create separate address space for the process
-    proc->page_table = vmm_create_address_space();
-    if (!proc->page_table) {
+    proc->page_directory = vmm_create_address_space();
+    if (!proc->page_directory) {
         kfree(proc->kernel_stack);
         kfree(proc);
         panic("process_create: Failed to create address space");
         return NULL;
     }
-    
+
     // Set up user stack
     if (vmm_setup_user_stack(proc) < 0) {
-        vmm_destroy_address_space(proc->page_table);
+        vmm_destroy_address_space(proc->page_directory);
         kfree(proc->kernel_stack);
         kfree(proc);
         panic("process_create: Failed to set up user stack");
         return NULL;
     }
-    
+
     // Set up user heap
     if (vmm_setup_user_heap(proc) < 0) {
-        vmm_destroy_address_space(proc->page_table);
+        vmm_destroy_address_space(proc->page_directory);
         kfree(proc->kernel_stack);
         kfree(proc);
         panic("process_create: Failed to set up user heap");
@@ -178,24 +180,23 @@ process_t* process_create(const char* name, void (*entry_point)(void), uint32_t 
     // Initialize memory statistics
     proc->pages_allocated = 0;
     proc->page_faults = 0;
-    
-    // Set up initial context
-    uint64_t* stack_top = (uint64_t*)((uint8_t*)proc->kernel_stack + KERNEL_STACK_SIZE);
-    
-    // Push entry point for process_entry_trampoline
-    *(--stack_top) = (uint64_t)entry_point;
-    
-    proc->context.rsp = (uint64_t)stack_top;
-    proc->context.rip = (uint64_t)process_entry_trampoline;
-    proc->context.rflags = 0x202;  // Interrupts enabled
-    
+
+    // Initialize signal handling
+    signal_init_process(proc);
+
+    // Set up initial context (32-bit)
+    uint32_t* stack_top = (uint32_t*)((uint8_t*)proc->kernel_stack + KERNEL_STACK_SIZE);
+
+    // Set entry point in edi for process_entry_trampoline
+    proc->context.edi = (uint32_t)entry_point;
+    proc->context.esp = (uint32_t)stack_top;
+    proc->context.eip = (uint32_t)process_entry_trampoline;
+    proc->context.eflags = 0x202;  // Interrupts enabled
+
     // Clear other registers
-    proc->context.r15 = 0;
-    proc->context.r14 = 0;
-    proc->context.r13 = 0;
-    proc->context.r12 = 0;
-    proc->context.rbx = 0;
-    proc->context.rbp = 0;
+    proc->context.esi = 0;
+    proc->context.ebx = 0;
+    proc->context.ebp = 0;
     
     // Add to process table
     process_table[slot] = proc;
@@ -209,7 +210,7 @@ process_t* process_create(const char* name, void (*entry_point)(void), uint32_t 
     terminal_writestring("Created process: ");
     terminal_writestring(name);
     terminal_writestring(" (PID ");
-    // TODO: Print PID
+    terminal_print_uint(proc->pid);
     terminal_writestring(")\n");
     
     return proc;
@@ -244,9 +245,9 @@ void process_destroy(process_t* process) {
         kfree(process->fd_table);
     }
     
-    // Free page table and address space
-    if (process->page_table) {
-        vmm_destroy_address_space(process->page_table);
+    // Free page directory and address space
+    if (process->page_directory) {
+        vmm_destroy_address_space(process->page_directory);
     }
     
     kfree(process);
@@ -274,14 +275,14 @@ process_state_t process_get_state(process_t* process) {
     return process ? process->state : PROCESS_STATE_TERMINATED;
 }
 
-// Yield CPU to next process  
+// Yield CPU to next process
 void process_yield(void) {
     // Update TSS with current process's kernel stack
     process_t* current = process_get_current();
     if (current && current != &idle_process) {
-        tss_set_kernel_stack((uint64_t)current->kernel_stack + current->kernel_stack_size);
+        tss_set_kernel_stack((uint32_t)current->kernel_stack + current->kernel_stack_size);
     }
-    
+
     // This will be called from timer interrupt
     schedule();
 }
@@ -304,15 +305,17 @@ void process_unblock(process_t* process) {
 
 // Exit current process
 void process_exit(int status) {
-    (void)status;  // TODO: Handle exit status
-    
     if (current_process && current_process != &idle_process) {
         terminal_writestring("Process exiting: ");
         terminal_writestring(current_process->name);
+        terminal_writestring(" with status ");
+        terminal_print_int(status);
         terminal_writestring("\n");
-        
+
+        // Store exit status for parent to retrieve via wait()
+        current_process->exit_status = status;
         current_process->state = PROCESS_STATE_TERMINATED;
-        
+
         // Clean up will happen later
         // For now, just schedule next process
         schedule();
@@ -327,33 +330,40 @@ void process_print_all(void) {
     terminal_writestring("\nProcess List:\n");
     terminal_writestring("PID  Name                     State      Ticks\n");
     terminal_writestring("---  ----------------------  ---------  ------\n");
-    
+
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* proc = process_table[i];
         if (proc) {
-            // TODO: Implement proper printing with formatting
-            terminal_writestring("  ");
+            // Print PID with padding
+            terminal_print_uint(proc->pid);
+            if (proc->pid < 10) terminal_writestring("    ");
+            else if (proc->pid < 100) terminal_writestring("   ");
+            else terminal_writestring("  ");
+
+            // Print name with padding (up to 24 chars)
             terminal_writestring(proc->name);
+            int name_len = 0;
+            const char* p = proc->name;
+            while (*p++) name_len++;
+            for (int j = name_len; j < 24; j++) terminal_writestring(" ");
+
+            // Print state
+            const char* state_str = "UNKNOWN";
+            switch (proc->state) {
+                case PROCESS_STATE_READY:      state_str = "READY    "; break;
+                case PROCESS_STATE_RUNNING:    state_str = "RUNNING  "; break;
+                case PROCESS_STATE_BLOCKED:    state_str = "BLOCKED  "; break;
+                case PROCESS_STATE_WAITING:    state_str = "WAITING  "; break;
+                case PROCESS_STATE_ZOMBIE:     state_str = "ZOMBIE   "; break;
+                case PROCESS_STATE_TERMINATED: state_str = "TERM     "; break;
+            }
+            terminal_writestring(state_str);
+            terminal_writestring("  ");
+
+            // Print ticks
+            terminal_print_uint(proc->ticks_total);
             terminal_writestring("\n");
         }
-    }
-}
-
-// Helper to copy string
-static void strcpy(char* dest, const char* src) {
-    while (*src) {
-        *dest++ = *src++;
-    }
-    *dest = '\0';
-}
-
-static void strncpy(char* dest, const char* src, size_t n) {
-    size_t i;
-    for (i = 0; i < n && src[i]; i++) {
-        dest[i] = src[i];
-    }
-    for (; i < n; i++) {
-        dest[i] = '\0';
     }
 }
 
@@ -415,10 +425,10 @@ void free_process_struct(process_t* process) {
         kfree(process->kernel_stack);
     }
     
-    if (process->page_table) {
-        vmm_destroy_address_space(process->page_table);
+    if (process->page_directory) {
+        vmm_destroy_address_space(process->page_directory);
     }
-    
+
     kfree(process);
 }
 

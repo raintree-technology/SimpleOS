@@ -7,6 +7,8 @@
 #include "../include/terminal.h"
 #include "../include/isr.h"
 #include "../include/keyboard.h"
+#include "../include/process.h"
+#include "../include/signal.h"
 
 #define KEYBOARD_DATA_PORT 0x60
 #define IRQ1 33  // Keyboard IRQ
@@ -113,15 +115,24 @@ static void keyboard_callback(registers_t* regs) {
         } else {
             char c = kbd_us[scancode];
             if (c) {
-                // Check for Ctrl+C
+                // Check for Ctrl+C (SIGINT)
                 if (ctrl_pressed && (c == 'c' || c == 'C')) {
                     terminal_writestring("^C\n");
                     // Send SIGINT to foreground process
-                    extern void signal_send(int pid, int sig);
-                    extern process_t* process_get_current(void);
                     process_t* current = process_get_current();
                     if (current && current->pid != 1) {  // Don't kill init
-                        signal_send(current->pid, 2);  // SIGINT
+                        signal_send(current->pid, SIGINT);
+                    }
+                    return;
+                }
+
+                // Check for Ctrl+Z (SIGTSTP)
+                if (ctrl_pressed && (c == 'z' || c == 'Z')) {
+                    terminal_writestring("^Z\n");
+                    // Send SIGTSTP to foreground process
+                    process_t* current = process_get_current();
+                    if (current && current->pid != 1) {  // Don't stop init
+                        signal_send(current->pid, SIGTSTP);
                     }
                     return;
                 }

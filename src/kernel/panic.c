@@ -3,13 +3,13 @@
 #include "../include/terminal.h"
 #include "../include/isr.h"
 
-// Helper to print hex values
-static void print_hex(const char* label, uint64_t value) {
+// Helper to print hex values (32-bit)
+static void print_hex(const char* label, uint32_t value) {
     terminal_writestring(label);
     terminal_writestring(": 0x");
-    
-    // Print 16 hex digits for 64-bit value
-    for (int i = 60; i >= 0; i -= 4) {
+
+    // Print 8 hex digits for 32-bit value
+    for (int i = 28; i >= 0; i -= 4) {
         uint8_t digit = (value >> i) & 0xF;
         if (digit < 10) {
             terminal_putchar('0' + digit);
@@ -24,7 +24,7 @@ static void print_hex(const char* label, uint64_t value) {
 void panic(const char* msg) {
     // Disable interrupts
     asm volatile("cli");
-    
+
     // Print panic header
     terminal_writestring("\n\n");
     terminal_writestring("================================================================================\n");
@@ -34,18 +34,18 @@ void panic(const char* msg) {
     terminal_writestring(msg);
     terminal_writestring("\n\n");
     terminal_writestring("System halted. Please restart your computer.\n");
-    
+
     // Halt forever
     while (1) {
         asm volatile("hlt");
     }
 }
 
-// Panic with register dump
+// Panic with register dump (32-bit)
 void panic_with_regs(const char* msg, registers_t* regs) {
     // Disable interrupts
     asm volatile("cli");
-    
+
     // Print panic header
     terminal_writestring("\n\n");
     terminal_writestring("================================================================================\n");
@@ -54,48 +54,44 @@ void panic_with_regs(const char* msg, registers_t* regs) {
     terminal_writestring("Error: ");
     terminal_writestring(msg);
     terminal_writestring("\n\n");
-    
+
     // Print interrupt info
     terminal_writestring("Interrupt: ");
     print_hex("INT", regs->int_no);
     print_hex("ERR", regs->err_code);
     terminal_writestring("\n\n");
-    
-    // Print general purpose registers
+
+    // Print general purpose registers (32-bit)
     terminal_writestring("Registers:\n");
-    print_hex("RAX", regs->rax);
-    print_hex("RBX", regs->rbx);
-    print_hex("RCX", regs->rcx);
-    print_hex("RDX", regs->rdx);
+    print_hex("EAX", regs->eax);
+    print_hex("EBX", regs->ebx);
+    print_hex("ECX", regs->ecx);
+    print_hex("EDX", regs->edx);
     terminal_writestring("\n");
-    
-    print_hex("RSI", regs->rsi);
-    print_hex("RDI", regs->rdi);
-    print_hex("RBP", regs->rbp);
-    print_hex("RSP", regs->rsp);
-    terminal_writestring("\n");
-    
-    print_hex("R8 ", regs->r8);
-    print_hex("R9 ", regs->r9);
-    print_hex("R10", regs->r10);
-    print_hex("R11", regs->r11);
-    terminal_writestring("\n");
-    
-    print_hex("R12", regs->r12);
-    print_hex("R13", regs->r13);
-    print_hex("R14", regs->r14);
-    print_hex("R15", regs->r15);
+
+    print_hex("ESI", regs->esi);
+    print_hex("EDI", regs->edi);
+    print_hex("EBP", regs->ebp);
+    print_hex("ESP", regs->esp);
     terminal_writestring("\n\n");
-    
+
+    // Print segment registers
+    terminal_writestring("Segments:\n");
+    print_hex("DS ", regs->ds);
+    print_hex("ES ", regs->es);
+    print_hex("FS ", regs->fs);
+    print_hex("GS ", regs->gs);
+    terminal_writestring("\n\n");
+
     // Print instruction pointer and flags
     terminal_writestring("Execution:\n");
-    print_hex("RIP", regs->rip);
+    print_hex("EIP", regs->eip);
     print_hex("CS ", regs->cs);
-    print_hex("RFLAGS", regs->rflags);
+    print_hex("EFLAGS", regs->eflags);
     terminal_writestring("\n\n");
-    
+
     terminal_writestring("System halted. Please restart your computer.\n");
-    
+
     // Halt forever
     while (1) {
         asm volatile("hlt");

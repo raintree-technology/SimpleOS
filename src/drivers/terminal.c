@@ -134,11 +134,84 @@ void terminal_enable_vt(void) {
 // Set cursor position
 void terminal_set_cursor(uint16_t x, uint16_t y) {
     uint16_t pos = y * VGA_WIDTH + x;
-    
+
     // Cursor LOW port to VGA INDEX register
     outb(0x3D4, 0x0F);
     outb(0x3D5, (uint8_t)(pos & 0xFF));
     // Cursor HIGH port to VGA INDEX register
     outb(0x3D4, 0x0E);
     outb(0x3D5, (uint8_t)((pos >> 8) & 0xFF));
+}
+
+// Print signed integer (32-bit to avoid 64-bit division)
+void terminal_print_int(int32_t num) {
+    char buffer[12];  // -2147483648 is 11 chars + null
+    int i = 0;
+    int negative = 0;
+
+    if (num == 0) {
+        terminal_putchar('0');
+        return;
+    }
+
+    if (num < 0) {
+        negative = 1;
+        num = -num;
+    }
+
+    while (num > 0) {
+        buffer[i++] = '0' + (num % 10);
+        num /= 10;
+    }
+
+    if (negative) {
+        terminal_putchar('-');
+    }
+
+    while (i > 0) {
+        terminal_putchar(buffer[--i]);
+    }
+}
+
+// Print unsigned integer (32-bit to avoid 64-bit division)
+void terminal_print_uint(uint32_t num) {
+    char buffer[11];  // 4294967295 is 10 chars + null
+    int i = 0;
+
+    if (num == 0) {
+        terminal_putchar('0');
+        return;
+    }
+
+    while (num > 0) {
+        buffer[i++] = '0' + (num % 10);
+        num /= 10;
+    }
+
+    while (i > 0) {
+        terminal_putchar(buffer[--i]);
+    }
+}
+
+// Print hexadecimal with 0x prefix (32-bit)
+void terminal_print_hex(uint32_t num) {
+    static const char hex_chars[] = "0123456789abcdef";
+    char buffer[9];  // 8 hex digits + null
+    int i = 0;
+
+    terminal_writestring("0x");
+
+    if (num == 0) {
+        terminal_putchar('0');
+        return;
+    }
+
+    while (num > 0) {
+        buffer[i++] = hex_chars[num & 0xF];
+        num >>= 4;
+    }
+
+    while (i > 0) {
+        terminal_putchar(buffer[--i]);
+    }
 }

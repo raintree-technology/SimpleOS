@@ -3,13 +3,14 @@
 #include "../include/terminal.h"
 #include "../include/panic.h"
 #include "../include/vmm.h"
+#include "../include/signal.h"
 
 // External assembly function
 extern void context_switch(context_t* old_context, context_t* new_context);
 
 // Scheduler state
 static bool scheduler_enabled = false;
-static uint64_t schedule_count = 0;
+static uint32_t schedule_count = 0;
 
 // External references
 extern process_t* current_process;
@@ -22,12 +23,17 @@ void schedule(void) {
     if (!scheduler_enabled) {
         return;
     }
-    
+
     // Disable interrupts during scheduling
     asm volatile("cli");
-    
+
+    // Handle pending signals for current process
+    if (signal_pending()) {
+        signal_handle();
+    }
+
     schedule_count++;
-    
+
     process_t* current = process_get_current();
     process_t* next = NULL;
     
@@ -53,9 +59,9 @@ void schedule(void) {
         current_process = next;
         
         // Switch page tables if different
-        if (!current || current->page_table != next->page_table) {
-            if (next->page_table) {
-                vmm_switch_address_space(next->page_table);
+        if (!current || current->page_directory != next->page_directory) {
+            if (next->page_directory) {
+                vmm_switch_address_space(next->page_directory);
             }
         }
         
@@ -124,6 +130,6 @@ void scheduler_disable(void) {
 void scheduler_stats(void) {
     terminal_writestring("Scheduler statistics:\n");
     terminal_writestring("  Schedule count: ");
-    // TODO: Print schedule_count
+    terminal_print_uint(schedule_count);
     terminal_writestring("\n");
 }

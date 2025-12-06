@@ -161,14 +161,12 @@ static int ramfs_write(fs_node_t* node, uint32_t offset, uint32_t size, uint8_t*
     }
     
     uint32_t block_num = node->first_block;
-    uint32_t prev_block = -1;
     uint32_t block_offset = offset;
-    
+
     // Skip to starting block
     while (block_offset >= FS_BLOCK_SIZE) {
         block_offset -= FS_BLOCK_SIZE;
-        prev_block = block_num;
-        
+
         if (ramfs.blocks[block_num].next_block == (uint32_t)-1) {
             // Need new block
             int new_block = allocate_block();
