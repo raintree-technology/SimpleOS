@@ -7,11 +7,36 @@ body {
   margin: 0;
   padding: 0;
   background: #000;
+  height: 100%;
+  min-height: 100%;
   overflow: hidden;
+}
+
+body > * {
+  height: 100%;
 }
 
 /* v86 screen container styles */
 div[style*="screen_container"] canvas {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+}
+
+.vm-screen {
+  position: relative;
+  overflow: hidden;
+}
+
+.vm-screen > canvas,
+.vm-screen > div {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+}
+
+.vm-screen > div {
+  overflow: hidden !important;
 }

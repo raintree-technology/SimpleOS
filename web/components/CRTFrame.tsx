@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useEffect, useState, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 interface CRTFrameProps {
   children: ReactNode;
@@ -8,6 +8,8 @@ interface CRTFrameProps {
 
 // ASCII characters for the swirl effect (from dense to sparse)
 const ASCII_CHARS = "█▓▒░@%#*+=-:. ";
+const TOP_VENT_KEYS = Array.from({ length: 16 }, (_, index) => `top-vent-${index}`);
+const SIDE_VENT_KEYS = Array.from({ length: 10 }, (_, index) => `side-vent-${index}`);
 
 export default function CRTFrame({ children }: CRTFrameProps) {
   const [powerOn, setPowerOn] = useState(false);
@@ -55,11 +57,10 @@ export default function CRTFrame({ children }: CRTFrameProps) {
 
     // Smooth color transition between pastels
     let currentHue = 280; // Start with lavender
-    let targetHue = 320;  // Pink
+    let targetHue = 320; // Pink
     let hueTransitionProgress = 0;
 
     const charsLen = ASCII_CHARS.length;
-    const TWO_PI = Math.PI * 2;
 
     // Spiral arms
     const NUM_ARMS = 3;
@@ -112,7 +113,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
           const globalRotation = time * 0.15;
 
           // Vortex rotation - inner spins faster, outer slower
-          const rotationSpeed = Math.pow(1 - normalizedDist, 2) * 0.5 + 0.08;
+          const rotationSpeed = (1 - normalizedDist) ** 2 * 0.5 + 0.08;
           const vortexAngle = angle + globalRotation + time * rotationSpeed;
 
           // Spiral arm pattern - wide, soft arms
@@ -121,13 +122,13 @@ export default function CRTFrame({ children }: CRTFrameProps) {
 
           // Soft arm falloff using smoothed cosine
           const rawArm = (Math.cos(armAngle) + 1) * 0.5;
-          const armIntensity = Math.pow(rawArm, 0.8); // Softer falloff = wider arms
+          const armIntensity = rawArm ** 0.8; // Softer falloff = wider arms
 
           // Gentle radial pulse
           const pulse = Math.sin(dist * 0.015 - time * 1.2) * 0.15 + 0.85;
 
           // Distance fade - keep more visible further out
-          const fade = Math.pow(1 - normalizedDist * 0.5, 0.8);
+          const fade = (1 - normalizedDist * 0.5) ** 0.8;
 
           // Combined intensity
           const intensity = armIntensity * pulse * fade;
@@ -142,7 +143,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
           const hueVariation = Math.sin(armAngle * 0.5) * 20;
           const hue = (baseHue + hueVariation + 360) % 360;
           const saturation = 35 + intensity * 25; // 35-60%
-          const lightness = 25 + intensity * 35;  // 25-60% - nice pastels
+          const lightness = 25 + intensity * 35; // 25-60% - nice pastels
           const alpha = 0.6 + intensity * 0.4;
 
           ctx.fillStyle = `hsla(${hue}, ${saturation}%, ${lightness}%, ${alpha})`;
@@ -178,11 +179,11 @@ export default function CRTFrame({ children }: CRTFrameProps) {
       <div className="desk-glow" />
 
       {/* The monitor unit */}
-      <div className={`monitor ${powerOn ? 'powered' : ''}`}>
+      <div className={`monitor ${powerOn ? "powered" : ""}`}>
         {/* Top ventilation slots */}
         <div className="vent-top">
-          {[...Array(16)].map((_, i) => (
-            <div key={i} className="vent-slot" />
+          {TOP_VENT_KEYS.map((key) => (
+            <div key={key} className="vent-slot" />
           ))}
         </div>
 
@@ -201,7 +202,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
               <div className="chromatic-left" />
               <div className="chromatic-right" />
 
-              <div className={`screen-content ${powerOn ? 'on' : ''}`}>
+              <div className={`screen-content ${powerOn ? "on" : ""}`}>
                 {children}
               </div>
             </div>
@@ -237,33 +238,34 @@ export default function CRTFrame({ children }: CRTFrameProps) {
           </div>
 
           <div className="power-section">
-            <div className={`power-led ${powerOn ? 'on' : ''}`} />
+            <div className={`power-led ${powerOn ? "on" : ""}`} />
             <span className="power-label">POWER</span>
           </div>
         </div>
 
         {/* Side vents */}
         <div className="side-vent left">
-          {[...Array(10)].map((_, i) => (
-            <div key={i} className="vent-horizontal" />
+          {SIDE_VENT_KEYS.map((key) => (
+            <div key={`${key}-left`} className="vent-horizontal" />
           ))}
         </div>
         <div className="side-vent right">
-          {[...Array(10)].map((_, i) => (
-            <div key={i} className="vent-horizontal" />
+          {SIDE_VENT_KEYS.map((key) => (
+            <div key={`${key}-right`} className="vent-horizontal" />
           ))}
         </div>
       </div>
 
       <style jsx>{`
         .crt-room {
-          min-height: 100vh;
+          height: 100dvh;
+          min-height: 100dvh;
           display: flex;
           flex-direction: column;
           align-items: center;
           justify-content: center;
           background: #0a0a12;
-          padding: 20px;
+          padding: 8px;
           position: relative;
           overflow: hidden;
         }
@@ -296,6 +298,8 @@ export default function CRTFrame({ children }: CRTFrameProps) {
         .monitor {
           position: relative;
           z-index: 2;
+          display: flex;
+          flex-direction: column;
           background: linear-gradient(180deg,
             #e8e4ef 0%,
             #ddd8e8 5%,
@@ -313,6 +317,8 @@ export default function CRTFrame({ children }: CRTFrameProps) {
             inset 4px 0 8px rgba(100, 80, 140, 0.05),
             inset -4px 0 8px rgba(100, 80, 140, 0.05);
           transition: transform 0.3s ease;
+          width: min(100%, 1220px);
+          max-height: calc(100dvh - 16px);
         }
 
         .monitor.powered {
@@ -323,7 +329,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
           display: flex;
           justify-content: center;
           gap: 10px;
-          margin-bottom: 18px;
+          margin-bottom: 14px;
         }
 
         .vent-slot {
@@ -339,18 +345,23 @@ export default function CRTFrame({ children }: CRTFrameProps) {
         }
 
         .monitor-face {
+          display: flex;
+          flex-direction: column;
           background: linear-gradient(180deg,
             #d8d3e8 0%,
             #cdc8e0 100%
           );
           border-radius: 12px;
-          padding: 24px;
+          padding: 14px;
           box-shadow:
             inset 0 2px 4px rgba(100, 80, 150, 0.1),
             inset 0 -1px 0 rgba(255, 255, 255, 0.4);
         }
 
         .screen-bezel {
+          flex: none;
+          width: 100%;
+          aspect-ratio: 4 / 3;
           background: linear-gradient(180deg,
             #2a2535 0%,
             #1a1520 10%,
@@ -358,7 +369,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
             #1a1520 100%
           );
           border-radius: 18px;
-          padding: 18px;
+          padding: 12px;
           box-shadow:
             inset 0 6px 18px rgba(20, 10, 40, 0.8),
             inset 0 -2px 6px rgba(200, 180, 255, 0.05),
@@ -367,6 +378,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
 
         .crt-glass {
           position: relative;
+          height: 100%;
           border-radius: 12px;
           overflow: hidden;
           background: #000;
@@ -377,6 +389,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
 
         .screen-content {
           position: relative;
+          height: 100%;
           z-index: 1;
           opacity: 0;
           transform: scaleY(0.01);
@@ -527,13 +540,13 @@ export default function CRTFrame({ children }: CRTFrameProps) {
         }
 
         .monitor-badge {
-          margin-top: 18px;
+          margin-top: 8px;
           text-align: center;
         }
 
         .badge-text {
           font-family: 'Helvetica Neue', Arial, sans-serif;
-          font-size: 22px;
+          font-size: 16px;
           font-weight: 300;
           color: #7a7090;
           letter-spacing: 5px;
@@ -544,18 +557,18 @@ export default function CRTFrame({ children }: CRTFrameProps) {
         .badge-model {
           display: block;
           font-family: 'Helvetica Neue', Arial, sans-serif;
-          font-size: 10px;
+          font-size: 9px;
           color: #9990a8;
           letter-spacing: 2px;
-          margin-top: 3px;
+          margin-top: 2px;
         }
 
         .monitor-base {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          margin-top: 18px;
-          padding: 12px 24px;
+          margin-top: 8px;
+          padding: 8px 16px;
           background: linear-gradient(180deg,
             #cdc8e0 0%,
             #c0bad8 100%
@@ -570,8 +583,8 @@ export default function CRTFrame({ children }: CRTFrameProps) {
         }
 
         .floppy-slot {
-          width: 100px;
-          height: 7px;
+          width: 88px;
+          height: 6px;
           background: linear-gradient(180deg,
             #4a4060 0%,
             #3a3050 50%,
@@ -593,7 +606,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
 
         .controls {
           display: flex;
-          gap: 24px;
+          gap: 16px;
         }
 
         .control-group {
@@ -605,8 +618,8 @@ export default function CRTFrame({ children }: CRTFrameProps) {
 
         .brightness-knob,
         .contrast-knob {
-          width: 28px;
-          height: 28px;
+          width: 24px;
+          height: 24px;
           border-radius: 50%;
           background: linear-gradient(180deg,
             #8880a0 0%,
@@ -676,7 +689,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
           transform: translateY(-50%);
           display: flex;
           flex-direction: column;
-          gap: 7px;
+          gap: 6px;
         }
 
         .side-vent.left {
@@ -689,7 +702,7 @@ export default function CRTFrame({ children }: CRTFrameProps) {
 
         .vent-horizontal {
           width: 4px;
-          height: 14px;
+          height: 12px;
           background: linear-gradient(90deg,
             #a8a0c0 0%,
             #8880a8 50%,
@@ -707,7 +720,59 @@ export default function CRTFrame({ children }: CRTFrameProps) {
 
         @media (max-width: 900px) {
           .monitor {
-            transform: scale(0.75);
+            width: min(100%, 960px);
+          }
+        }
+
+        @media (max-width: 720px) {
+          .crt-room {
+            padding: 6px;
+          }
+
+          .monitor {
+            border-radius: 22px 22px 10px 10px;
+            padding: 14px 16px 10px 16px;
+            max-height: calc(100dvh - 12px);
+          }
+
+          .vent-top {
+            gap: 6px;
+            margin-bottom: 12px;
+          }
+
+          .vent-slot {
+            width: 24px;
+          }
+
+          .monitor-face {
+            padding: 12px;
+          }
+
+          .screen-bezel {
+            padding: 10px;
+            aspect-ratio: 3 / 4;
+          }
+
+          .monitor-base {
+            padding: 8px 12px;
+          }
+
+          .floppy-slot {
+            width: 72px;
+          }
+
+          .controls {
+            gap: 12px;
+          }
+
+          .brightness-knob,
+          .contrast-knob {
+            width: 22px;
+            height: 22px;
+          }
+
+          .badge-text {
+            font-size: 15px;
           }
         }
       `}</style>
