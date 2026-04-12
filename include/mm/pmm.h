@@ -16,11 +16,19 @@
 // Initialize physical memory manager
 void pmm_init(uint32_t memory_size);
 
-// Allocate a single physical page
+// Allocate a single physical page (zeroed)
 void* pmm_alloc_page(void);
+
+// Allocate a single physical page (not zeroed — use when caller will overwrite)
+void* pmm_alloc_page_raw(void);
 
 // Free a physical page
 void pmm_free_page(void* page);
+
+// Reference counting for COW support
+void pmm_ref_page(void* page);
+void pmm_unref_page(void* page);
+uint8_t pmm_get_refcount(void* page);
 
 // Allocate multiple contiguous pages
 void* pmm_alloc_pages(size_t count);

@@ -9,11 +9,109 @@ body {
   background: #000;
   height: 100%;
   min-height: 100%;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+  font-family: var(--font-ui-sans), sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body > * {
   height: 100%;
+}
+
+@media (min-width: 721px) {
+  html,
+  body {
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 720px) {
+  body > * {
+    height: auto;
+    min-height: 100%;
+  }
+}
+
+:root {
+  --font-sans: var(--font-ui-sans), sans-serif;
+  --font-mono: var(--font-ui-mono), monospace;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+}
+
+@layer components {
+  .ui-micro {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 14px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .ui-panel-title {
+    font-family: var(--font-mono);
+    font-size: 24px;
+    line-height: 30px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .ui-body {
+    font-size: 16px;
+    line-height: 26px;
+    letter-spacing: 0;
+  }
+
+  .ui-mono-body {
+    font-family: var(--font-mono);
+    font-size: 15px;
+    line-height: 24px;
+    letter-spacing: 0;
+  }
+
+  .ui-brand {
+    font-family: var(--font-mono);
+    font-size: 15px;
+    line-height: 20px;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+  }
+
+  .ui-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(214, 227, 255, 0.26) transparent;
+  }
+
+  .ui-scrollbar::-webkit-scrollbar {
+    width: 10px;
+  }
+
+  .ui-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .ui-scrollbar::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background: linear-gradient(180deg, rgba(214, 227, 255, 0.34), rgba(214, 227, 255, 0.16));
+    background-clip: padding-box;
+  }
+
+  .ui-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(180deg, rgba(214, 227, 255, 0.44), rgba(214, 227, 255, 0.22));
+    background-clip: padding-box;
+  }
 }
 
 /* v86 screen container styles */
@@ -39,4 +137,9 @@ div[style*="screen_container"] canvas {
 
 .vm-screen > div {
   overflow: hidden !important;
+}
+
+.vm-screen.table-mode > div {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }

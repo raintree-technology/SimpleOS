@@ -208,7 +208,7 @@ def check_vmm_cleanup():
     checks = [
         ("vmm_destroy_address_space implemented", r"void\s+vmm_destroy_address_space.*\{[\s\S]*?pmm_free_page"),
         ("Page table recursion", r"free_p[dt]|free_pdpt"),
-        ("User space cleanup (entries 0-255)", r"for.*256|i\s*<\s*256"),
+        ("User space cleanup", r"PD_INDEX\(USER_VADDR_MIN\).*PD_INDEX\(KERNEL_BASE\)|for.*256|i\s*<\s*256"),
     ]
 
     all_pass = True
@@ -226,7 +226,7 @@ def check_terminal_print():
     header("Checking Terminal Print Functions")
 
     terminal_c = ROOT / "src/drivers/terminal.c"
-    terminal_h = ROOT / "src/include/terminal.h"
+    terminal_h = ROOT / "include/drivers/terminal.h"
 
     content_c = read_file(terminal_c)
     content_h = read_file(terminal_h) if terminal_h.exists() else ""
@@ -297,7 +297,7 @@ def check_elf_bounds():
     content = read_file(elf_c)
 
     checks = [
-        ("Header size check", r"size\s*<\s*sizeof.*Elf64_Ehdr"),
+        ("Header size check", r"size\s*<\s*sizeof.*Elf(32|64)_Ehdr"),
         ("Program header bounds", r"e_phoff.*>.*size|extends beyond"),
         ("Segment data bounds", r"p_offset.*>.*size|extends beyond"),
     ]

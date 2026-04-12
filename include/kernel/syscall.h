@@ -2,7 +2,7 @@
 #define SYSCALL_H
 
 #include <stdint.h>
-#include "isr.h"
+#include "kernel/isr.h"
 
 // System call numbers
 #define SYS_EXIT    1
@@ -30,9 +30,9 @@ void init_syscalls(void);
 // System call handler
 void syscall_handler(registers_t* regs);
 
-// User-space system call wrappers (for future use)
-static inline uint64_t syscall0(uint64_t num) {
-    uint64_t ret;
+// User-space system call wrappers (i386 INT 0x80 ABI)
+static inline uint32_t syscall0(uint32_t num) {
+    uint32_t ret;
     asm volatile(
         "int $0x80"
         : "=a"(ret)
@@ -42,34 +42,34 @@ static inline uint64_t syscall0(uint64_t num) {
     return ret;
 }
 
-static inline uint64_t syscall1(uint64_t num, uint64_t arg1) {
-    uint64_t ret;
+static inline uint32_t syscall1(uint32_t num, uint32_t arg1) {
+    uint32_t ret;
     asm volatile(
         "int $0x80"
         : "=a"(ret)
-        : "a"(num), "D"(arg1)
+        : "a"(num), "b"(arg1)
         : "memory"
     );
     return ret;
 }
 
-static inline uint64_t syscall2(uint64_t num, uint64_t arg1, uint64_t arg2) {
-    uint64_t ret;
+static inline uint32_t syscall2(uint32_t num, uint32_t arg1, uint32_t arg2) {
+    uint32_t ret;
     asm volatile(
         "int $0x80"
         : "=a"(ret)
-        : "a"(num), "D"(arg1), "S"(arg2)
+        : "a"(num), "b"(arg1), "c"(arg2)
         : "memory"
     );
     return ret;
 }
 
-static inline uint64_t syscall3(uint64_t num, uint64_t arg1, uint64_t arg2, uint64_t arg3) {
-    uint64_t ret;
+static inline uint32_t syscall3(uint32_t num, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
+    uint32_t ret;
     asm volatile(
         "int $0x80"
         : "=a"(ret)
-        : "a"(num), "D"(arg1), "S"(arg2), "d"(arg3)
+        : "a"(num), "b"(arg1), "c"(arg2), "d"(arg3)
         : "memory"
     );
     return ret;

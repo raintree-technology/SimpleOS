@@ -1,10 +1,10 @@
 // This file implements terminal output functions for SimpleOS.
 // It provides low-level screen manipulation for text mode display.
 
-#include "../include/terminal.h"
+#include "drivers/terminal.h"
 #include <stddef.h>
 #include <stdint.h>
-#include "../include/ports.h"
+#include "drivers/ports.h"
 
 // VGA text mode constants
 #define VGA_WIDTH 80

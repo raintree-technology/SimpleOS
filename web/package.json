@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "lsof -ti:3500 | xargs kill -9 2>/dev/null || true; next dev --turbopack -p 3500",
-    "build:os": "cd .. && make && cp simpleos.iso web/public/os/simpleos.iso",
+    "build:os": "cd .. && make && mkdir -p web/public/os && cp simpleos.iso web/public/os/simpleos.iso",
     "build": "next build",
     "start": "next start -p 3500",
     "lint": "biome lint .",
@@ -19,7 +19,6 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
-    "@tailwindcss/typography": "^0.5.10",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

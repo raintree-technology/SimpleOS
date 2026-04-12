@@ -1,5 +1,20 @@
 import type { Metadata } from "next";
+import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
+
+const uiSans = IBM_Plex_Sans({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-ui-sans",
+  display: "swap",
+});
+
+const uiMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400"],
+  variable: "--font-ui-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "SimpleOS",
@@ -13,7 +28,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="bg-black overflow-hidden">{children}</body>
+      <body className={`${uiSans.variable} ${uiMono.variable} overflow-hidden bg-black antialiased`}>
+        {children}
+      </body>
     </html>
   );
 }

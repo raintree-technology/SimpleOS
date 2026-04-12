@@ -1,20 +1,24 @@
-#include "../include/process.h"
-#include "../include/kmalloc.h"
-#include "../include/terminal.h"
-#include "../include/panic.h"
-#include "../include/scheduler.h"
-#include "../include/tss.h"
-#include "../include/vmm.h"
-#include "../include/pmm.h"
-#include "../include/signal.h"
-#include "../include/string.h"
+#include "kernel/process.h"
+#include "mm/kmalloc.h"
+#include "drivers/terminal.h"
+#include "kernel/panic.h"
+#include "kernel/scheduler.h"
+#include "arch/i386/tss.h"
+#include "mm/vmm.h"
+#include "mm/pmm.h"
+#include "ipc/signal.h"
+#include "lib/string.h"
+#include "arch/i386/usermode.h"
 
 // From syscall.c
 extern void init_process_fd_table(process_t* proc);
+extern void cleanup_process_fds(process_t* proc);
 
 // Assembly functions
 extern void context_switch(context_t* old_context, context_t* new_context);
 extern void process_entry_trampoline(void);
+extern void process_user_entry_trampoline(void);
+extern uint32_t* page_directory;
 
 // Process table
 process_t* process_table[MAX_PROCESSES];
@@ -29,8 +33,79 @@ process_t* current_process = NULL;
 static process_t idle_process;
 static uint8_t idle_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 
+static void wake_waiting_parent(process_t* child) {
+    process_t* parent;
+
+    if (!child || child->parent_pid == 0) {
+        return;
+    }
+
+    parent = process_find_by_pid(child->parent_pid);
+    if (parent && parent->state == PROCESS_STATE_WAITING) {
+        parent->state = PROCESS_STATE_READY;
+        if (!(parent->prev || parent->next || ready_queue_head == parent)) {
+            ready_queue_push(parent);
+        }
+    }
+}
+
+static process_t* alloc_process_common(const char* name, uint32_t priority) {
+    int slot = -1;
+    for (int i = 1; i < MAX_PROCESSES; i++) {
+        if (process_table[i] == NULL) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot == -1) {
+        terminal_writestring("Error: Process table full\n");
+        return NULL;
+    }
+
+    process_t* proc = (process_t*)kzalloc(sizeof(process_t));
+    if (!proc) {
+        panic("process_create: Out of memory for PCB");
+        return NULL;
+    }
+
+    proc->kernel_stack = kmalloc(KERNEL_STACK_SIZE);
+    if (!proc->kernel_stack) {
+        kfree(proc);
+        panic("process_create: Out of memory for kernel stack");
+        return NULL;
+    }
+
+    proc->pid = next_pid++;
+    strncpy(proc->name, name, 31);
+    proc->name[31] = '\0';
+    proc->state = PROCESS_STATE_READY;
+    proc->kernel_stack_size = KERNEL_STACK_SIZE;
+    proc->priority = priority;
+    proc->ticks_total = 0;
+    proc->ticks_remaining = DEFAULT_QUANTUM;
+    proc->wakeup_tick = 0;
+    proc->entry_point = NULL;
+    proc->user_entry = 0;
+
+    process_table[slot] = proc;
+
+    init_process_fd_table(proc);
+    signal_init_process(proc);
+
+    return proc;
+}
+
 // Helper: Add process to ready queue
 void ready_queue_push(process_t* proc) {
+    if (!proc) {
+        return;
+    }
+
+    if (proc->prev || proc->next || ready_queue_head == proc || ready_queue_tail == proc) {
+        return;
+    }
+
     proc->next = NULL;
     proc->prev = ready_queue_tail;
     
@@ -86,13 +161,17 @@ void process_init(void) {
     // Initialize idle process
     idle_process.pid = 0;
     strcpy(idle_process.name, "idle");
+    idle_process.kind = PROCESS_KIND_KERNEL_THREAD;
     idle_process.state = PROCESS_STATE_READY;
+    idle_process.page_directory = page_directory;
     idle_process.kernel_stack = idle_stack;
     idle_process.kernel_stack_size = KERNEL_STACK_SIZE;
     idle_process.priority = 255;  // Lowest priority
     idle_process.ticks_total = 0;
     idle_process.ticks_remaining = 1;
     idle_process.entry_point = idle_task;
+    idle_process.user_entry = 0;
+    idle_process.wakeup_tick = 0;
     
     // Set up idle process context (32-bit)
     idle_process.context.esp = (uint32_t)(idle_stack + KERNEL_STACK_SIZE);
@@ -105,114 +184,83 @@ void process_init(void) {
     // Initialize idle process fd table
     init_process_fd_table(&idle_process);
     
-    terminal_writestring("Process management initialized\n");
+    terminal_writestring("Process table ready\n");
 }
 
 // Create a new process
 process_t* process_create(const char* name, void (*entry_point)(void), uint32_t priority) {
-    // Find free slot
-    int slot = -1;
-    for (int i = 1; i < MAX_PROCESSES; i++) {
-        if (process_table[i] == NULL) {
-            slot = i;
-            break;
-        }
-    }
-    
-    if (slot == -1) {
-        terminal_writestring("Error: Process table full\n");
-        return NULL;
-    }
-    
-    // Allocate PCB
-    process_t* proc = (process_t*)kzalloc(sizeof(process_t));
+    process_t* proc = alloc_process_common(name, priority);
     if (!proc) {
-        panic("process_create: Out of memory for PCB");
         return NULL;
     }
-    
-    // Allocate kernel stack
-    proc->kernel_stack = kmalloc(KERNEL_STACK_SIZE);
-    if (!proc->kernel_stack) {
-        kfree(proc);
-        panic("process_create: Out of memory for kernel stack");
-        return NULL;
-    }
-    
-    // Initialize PCB
-    proc->pid = next_pid++;
-    strncpy(proc->name, name, 31);
-    proc->name[31] = '\0';
-    proc->state = PROCESS_STATE_READY;
-    proc->kernel_stack_size = KERNEL_STACK_SIZE;
-    proc->priority = priority;
-    proc->ticks_total = 0;
-    proc->ticks_remaining = DEFAULT_QUANTUM;
+
+    proc->kind = PROCESS_KIND_KERNEL_THREAD;
+    proc->page_directory = page_directory;
     proc->entry_point = entry_point;
-    
-    // Create separate address space for the process
-    proc->page_directory = vmm_create_address_space();
-    if (!proc->page_directory) {
-        kfree(proc->kernel_stack);
-        kfree(proc);
-        panic("process_create: Failed to create address space");
-        return NULL;
-    }
 
-    // Set up user stack
-    if (vmm_setup_user_stack(proc) < 0) {
-        vmm_destroy_address_space(proc->page_directory);
-        kfree(proc->kernel_stack);
-        kfree(proc);
-        panic("process_create: Failed to set up user stack");
-        return NULL;
-    }
-
-    // Set up user heap
-    if (vmm_setup_user_heap(proc) < 0) {
-        vmm_destroy_address_space(proc->page_directory);
-        kfree(proc->kernel_stack);
-        kfree(proc);
-        panic("process_create: Failed to set up user heap");
-        return NULL;
-    }
-    
-    // Initialize memory statistics
-    proc->pages_allocated = 0;
-    proc->page_faults = 0;
-
-    // Initialize signal handling
-    signal_init_process(proc);
-
-    // Set up initial context (32-bit)
     uint32_t* stack_top = (uint32_t*)((uint8_t*)proc->kernel_stack + KERNEL_STACK_SIZE);
-
-    // Set entry point in edi for process_entry_trampoline
     proc->context.edi = (uint32_t)entry_point;
     proc->context.esp = (uint32_t)stack_top;
     proc->context.eip = (uint32_t)process_entry_trampoline;
-    proc->context.eflags = 0x202;  // Interrupts enabled
-
-    // Clear other registers
+    proc->context.eflags = 0x202;
     proc->context.esi = 0;
     proc->context.ebx = 0;
     proc->context.ebp = 0;
-    
-    // Add to process table
-    process_table[slot] = proc;
-    
-    // Initialize file descriptor table
-    init_process_fd_table(proc);
-    
-    // Add to ready queue
+
     ready_queue_push(proc);
+
+    terminal_writestring("Spawned task: ");
+    terminal_writestring(name);
+    terminal_writestring(" [PID ");
+    terminal_print_uint(proc->pid);
+    terminal_writestring("]\n");
     
-    terminal_writestring("Created process: ");
+    return proc;
+}
+
+process_t* process_create_user(const char* name, uint32_t priority) {
+    process_t* proc = alloc_process_common(name, priority);
+    if (!proc) {
+        return NULL;
+    }
+
+    proc->kind = PROCESS_KIND_USER;
+    proc->page_directory = vmm_create_address_space();
+    if (!proc->page_directory) {
+        process_destroy(proc);
+        panic("process_create_user: Failed to create address space");
+        return NULL;
+    }
+
+    if (vmm_setup_user_stack(proc) < 0) {
+        process_destroy(proc);
+        panic("process_create_user: Failed to set up user stack");
+        return NULL;
+    }
+
+    if (vmm_setup_user_heap(proc) < 0) {
+        process_destroy(proc);
+        panic("process_create_user: Failed to set up user heap");
+        return NULL;
+    }
+
+    uint32_t* stack_top = (uint32_t*)((uint8_t*)proc->kernel_stack + KERNEL_STACK_SIZE);
+    proc->context.esp = (uint32_t)stack_top;
+    proc->context.eip = (uint32_t)process_user_entry_trampoline;
+    proc->context.eflags = 0x202;
+    proc->context.edi = 0;
+    proc->context.esi = 0;
+    proc->context.ebx = 0;
+    proc->context.ebp = 0;
+
+    ready_queue_push(proc);
+
+    terminal_writestring("Created user process: ");
     terminal_writestring(name);
     terminal_writestring(" (PID ");
     terminal_print_uint(proc->pid);
     terminal_writestring(")\n");
-    
+
     return proc;
 }
 
@@ -223,7 +271,8 @@ void process_destroy(process_t* process) {
     }
     
     // Remove from queues
-    if (process->state == PROCESS_STATE_READY) {
+    if (process->state == PROCESS_STATE_READY &&
+        (process->prev || process->next || ready_queue_head == process)) {
         ready_queue_remove(process);
     }
     
@@ -240,13 +289,15 @@ void process_destroy(process_t* process) {
         kfree(process->kernel_stack);
     }
     
-    // Free file descriptor table
+    // Close open file descriptors and free the table
+    cleanup_process_fds(process);
     if (process->fd_table) {
         kfree(process->fd_table);
     }
-    
-    // Free page directory and address space
-    if (process->page_directory) {
+
+    // Free page directory only for user processes — kernel threads share
+    // the kernel page directory and must not destroy it.
+    if (process->kind == PROCESS_KIND_USER && process->page_directory) {
         vmm_destroy_address_space(process->page_directory);
     }
     
@@ -273,6 +324,10 @@ const char* process_get_name(void) {
 // Get process state
 process_state_t process_get_state(process_t* process) {
     return process ? process->state : PROCESS_STATE_TERMINATED;
+}
+
+process_kind_t process_get_kind(process_t* process) {
+    return process ? process->kind : PROCESS_KIND_KERNEL_THREAD;
 }
 
 // Yield CPU to next process
@@ -312,15 +367,16 @@ void process_exit(int status) {
         terminal_print_int(status);
         terminal_writestring("\n");
 
-        // Store exit status for parent to retrieve via wait()
         current_process->exit_status = status;
-        current_process->state = PROCESS_STATE_TERMINATED;
+        if (current_process->parent_pid != 0) {
+            current_process->state = PROCESS_STATE_ZOMBIE;
+            wake_waiting_parent(current_process);
+        } else {
+            current_process->state = PROCESS_STATE_TERMINATED;
+        }
 
-        // Clean up will happen later
-        // For now, just schedule next process
         schedule();
         
-        // Should never return
         panic("process_exit: schedule() returned!");
     }
 }
@@ -371,47 +427,19 @@ void process_print_all(void) {
 
 // Allocate a new process structure
 process_t* allocate_process_struct(void) {
-    // Find free slot
-    int slot = -1;
-    for (int i = 1; i < MAX_PROCESSES; i++) {
-        if (process_table[i] == NULL) {
-            slot = i;
-            break;
-        }
-    }
-    
-    if (slot == -1) {
-        return NULL;  // No free slots
-    }
-    
-    // Allocate PCB
-    process_t* proc = (process_t*)kzalloc(sizeof(process_t));
+    process_t* proc = alloc_process_common("fork-child", 1);
     if (!proc) {
         return NULL;
     }
-    
-    // Allocate kernel stack
-    proc->kernel_stack = kmalloc(KERNEL_STACK_SIZE);
-    if (!proc->kernel_stack) {
-        kfree(proc);
-        return NULL;
-    }
-    
-    // Assign PID and add to table
-    proc->pid = next_pid++;
-    proc->kernel_stack_size = KERNEL_STACK_SIZE;
-    process_table[slot] = proc;
-    
-    // Initialize file descriptor table
-    init_process_fd_table(proc);
-    
+
+    proc->name[0] = '\0';
     return proc;
 }
 
 // Free a process structure
 void free_process_struct(process_t* process) {
     if (!process) return;
-    
+
     // Remove from process table
     for (int i = 0; i < MAX_PROCESSES; i++) {
         if (process_table[i] == process) {
@@ -419,13 +447,16 @@ void free_process_struct(process_t* process) {
             break;
         }
     }
-    
+
+    // Close open file descriptors
+    cleanup_process_fds(process);
+
     // Free resources
     if (process->kernel_stack) {
         kfree(process->kernel_stack);
     }
-    
-    if (process->page_directory) {
+
+    if (process->kind == PROCESS_KIND_USER && process->page_directory) {
         vmm_destroy_address_space(process->page_directory);
     }
 
@@ -442,4 +473,14 @@ process_t* find_zombie_child(uint32_t parent_pid) {
         }
     }
     return NULL;
+}
+
+void process_enter_user_mode(void) {
+    process_t* current = process_get_current();
+    if (!current || current->kind != PROCESS_KIND_USER || current->user_entry == 0) {
+        panic("process_enter_user_mode: Invalid user process state");
+    }
+
+    switch_to_user_mode((void*)current->user_entry, (void*)current->stack_top);
+    panic("process_enter_user_mode: Returned from user mode");
 }

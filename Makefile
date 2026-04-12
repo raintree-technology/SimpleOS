@@ -1,16 +1,23 @@
-# This Makefile automates the build process for SimpleOS.
-# It defines compilation rules for C and assembly files, linking, and cleaning up built files.
+# Main build for the 32-bit freestanding SimpleOS target.
 
-# SimpleOS/Makefile
+CROSS_PREFIX ?= i686-elf-
+CC = $(CROSS_PREFIX)gcc
+AS = $(CROSS_PREFIX)as
+ASFLAGS ?= --32
+# Host tool name retained from the GRUB toolchain package, not the kernel target.
+GRUB_MKRESCUE ?= x86_64-elf-grub-mkrescue
+QEMU ?= qemu-system-i386
+ARCH_LABEL ?= i386
+ARCH_DIR ?= i386
+ARCH_SRC_DIR = src/arch/$(ARCH_DIR)
+ARCH_INCLUDE_DIR = include/arch/$(ARCH_DIR)
+ARCH_BUILD_DIR = arch/$(ARCH_DIR)
 
-# Compiler and assembler (32-bit for v86 browser compatibility)
-CC = i686-elf-gcc
-AS = i686-elf-as
 # Compiler flags
-CFLAGS = -ffreestanding -c -m32 -O2 -Wall -Wextra -I./include -I./include/arch/x86_64 -I./include/kernel -I./include/mm -I./include/drivers -I./include/fs -I./include/ipc -I./include/lib -I./include/boot
+CFLAGS = -ffreestanding -c -m32 -O2 -Wall -Wextra -I./include -I./$(ARCH_INCLUDE_DIR) -I./include/kernel -I./include/mm -I./include/drivers -I./include/fs -I./include/ipc -I./include/lib -I./include/boot
 
 # Linker flags
-LDFLAGS = -nostdlib -T linker.ld -Wl,--no-warn-rwx-segments -Wl,--no-warn-execstack -Wl,--verbose
+LDFLAGS = -nostdlib -T linker.ld -Wl,-m,elf_i386 -Wl,--no-warn-rwx-segments -Wl,--no-warn-execstack -Wl,--verbose
 
 # Source files organized by subsystem
 KERNEL_SRC = src/kernel/kernel.c src/kernel/scheduler.c src/kernel/process.c \
@@ -29,17 +36,16 @@ LIB_SRC = src/lib/elf.c src/lib/string.c
 
 BOOT_SRC = src/boot/exceptions.c
 
-ARCH_SRC = src/arch/x86_64/tss.c src/arch/x86_64/usermode.c
+ARCH_SRC = $(ARCH_SRC_DIR)/tss.c $(ARCH_SRC_DIR)/usermode.c
 
-PROG_SRC = src/programs/shell.c
 
 # Assembly sources
-ASM_SRC = src/arch/x86_64/asm_functions.s src/arch/x86_64/boot.s \
-          src/arch/x86_64/context_switch.s
+ASM_SRC = $(ARCH_SRC_DIR)/asm_functions.s $(ARCH_SRC_DIR)/boot.s \
+          $(ARCH_SRC_DIR)/context_switch.s
 
 # All C sources
 SRC = $(KERNEL_SRC) $(MM_SRC) $(DRIVER_SRC) $(FS_SRC) $(IPC_SRC) $(LIB_SRC) \
-      $(BOOT_SRC) $(ARCH_SRC) $(PROG_SRC)
+      $(BOOT_SRC) $(ARCH_SRC)
 
 # Object files - put them in build directory
 OBJ_DIR = build
@@ -50,7 +56,39 @@ OUTPUT = kernel.bin
 ISO = simpleos.iso
 
 # Default target
-all: $(ISO)
+all: check-toolchain $(ISO)
+
+help:
+	@echo "SimpleOS build targets"
+	@echo "  make            Build $(ISO)"
+	@echo "  make run        Build and boot in QEMU"
+	@echo "  make clean      Remove build artifacts"
+	@echo ""
+	@echo "Toolchain variables"
+	@echo "  CROSS_PREFIX=$(CROSS_PREFIX)"
+	@echo "  GRUB_MKRESCUE=$(GRUB_MKRESCUE)"
+	@echo "  QEMU=$(QEMU)"
+	@echo "  ARCH_LABEL=$(ARCH_LABEL)"
+	@echo "  ARCH_SRC_DIR=$(ARCH_SRC_DIR)"
+	@echo "  ARCH_INCLUDE_DIR=$(ARCH_INCLUDE_DIR)"
+	@echo "  ASFLAGS=$(ASFLAGS)"
+
+check-toolchain:
+	@command -v "$(CC)" >/dev/null 2>&1 || { \
+		echo "Missing compiler: $(CC)"; \
+		echo "Install an i686 ELF cross-toolchain or use ./build.sh if Docker is available."; \
+		exit 1; \
+	}
+	@command -v "$(AS)" >/dev/null 2>&1 || { \
+		echo "Missing assembler: $(AS)"; \
+		echo "Install an i686 ELF cross-toolchain or use ./build.sh if Docker is available."; \
+		exit 1; \
+	}
+	@command -v "$(GRUB_MKRESCUE)" >/dev/null 2>&1 || { \
+		echo "Missing ISO tool: $(GRUB_MKRESCUE)"; \
+		echo "Install the GRUB mkrescue toolchain required to build $(ISO)."; \
+		exit 1; \
+	}
 
 # Create build directories
 $(OBJ_DIR):
@@ -62,12 +100,11 @@ $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)/ipc
 	mkdir -p $(OBJ_DIR)/lib
 	mkdir -p $(OBJ_DIR)/boot
-	mkdir -p $(OBJ_DIR)/arch/x86_64
-	mkdir -p $(OBJ_DIR)/programs
+	mkdir -p $(OBJ_DIR)/$(ARCH_BUILD_DIR)
 
 # Link object files to create the kernel binary
 $(OUTPUT): $(OBJ_DIR) $(OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(OBJ)
+	$(CC) -m32 $(LDFLAGS) -o $@ $(OBJ)
 
 # Compile C files
 $(OBJ_DIR)/%.o: src/%.c
@@ -75,19 +112,24 @@ $(OBJ_DIR)/%.o: src/%.c
 
 # Assemble assembly files
 $(OBJ_DIR)/%.o: src/%.s
-	$(AS) $< -o $@
+	$(AS) $(ASFLAGS) $< -o $@
 
 # Create bootable ISO (using i386-pc modules for legacy BIOS boot)
 $(ISO): $(OUTPUT)
 	mkdir -p iso/boot/grub
 	cp $(OUTPUT) iso/boot/
 	cp boot/grub/grub.cfg iso/boot/grub/
-	GRUB_PKGDATADIR=grub-bios/lib/grub x86_64-elf-grub-mkrescue -d grub-bios/lib/grub/i386-pc -o $(ISO) iso/
+	GRUB_PKGDATADIR=grub-bios/lib/grub $(GRUB_MKRESCUE) -d grub-bios/lib/grub/i386-pc -o $(ISO) iso/
 	rm -rf iso/
 
 # Run in QEMU (32-bit)
-run: $(ISO)
-	qemu-system-i386 -cdrom $(ISO) -m 512M
+run: check-toolchain $(ISO)
+	@command -v "$(QEMU)" >/dev/null 2>&1 || { \
+		echo "Missing emulator: $(QEMU)"; \
+		echo "Install QEMU to boot $(ISO) locally."; \
+		exit 1; \
+	}
+	$(QEMU) -cdrom $(ISO) -m 512M
 
 # Clean up built files
 clean:
@@ -96,4 +138,4 @@ clean:
 	rm -rf iso/
 
 # Phony targets
-.PHONY: all clean run
+.PHONY: all clean run help check-toolchain

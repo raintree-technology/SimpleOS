@@ -3,6 +3,10 @@ build/
 *.o
 *.bin
 *.iso
+*.elf
+
+# Web demo assets (built or downloaded, not checked in)
+web/public/os/
 
 # Editor files
 .vscode/

@@ -3,12 +3,12 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "../include/ports.h"
-#include "../include/terminal.h"
-#include "../include/isr.h"
-#include "../include/keyboard.h"
-#include "../include/process.h"
-#include "../include/signal.h"
+#include "drivers/ports.h"
+#include "drivers/terminal.h"
+#include "kernel/isr.h"
+#include "drivers/keyboard.h"
+#include "kernel/process.h"
+#include "ipc/signal.h"
 
 #define KEYBOARD_DATA_PORT 0x60
 #define IRQ1 33  // Keyboard IRQ
@@ -21,6 +21,7 @@ static uint8_t kbd_write_pos = 0;
 // Control key state
 static bool ctrl_pressed = false;
 static bool alt_pressed = false;
+static bool shift_pressed = false;
 
 // Special keys
 #define KEY_UP    0x48
@@ -32,6 +33,10 @@ static bool alt_pressed = false;
 #define KEY_CTRL_RELEASE 0x9D
 #define KEY_ALT   0x38
 #define KEY_ALT_RELEASE 0xB8
+#define KEY_LEFT_SHIFT 0x2A
+#define KEY_LEFT_SHIFT_RELEASE 0xAA
+#define KEY_RIGHT_SHIFT 0x36
+#define KEY_RIGHT_SHIFT_RELEASE 0xB6
 #define KEY_F1    0x3B
 #define KEY_F2    0x3C
 #define KEY_F3    0x3D
@@ -47,6 +52,41 @@ static char kbd_us[128] = {
     '-', 0, 0, 0, '+', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
+static char apply_shift(uint8_t scancode, char c) {
+    if (!shift_pressed) {
+        return c;
+    }
+
+    if (c >= 'a' && c <= 'z') {
+        return (char)(c - ('a' - 'A'));
+    }
+
+    switch (scancode) {
+        case 0x02: return '!';
+        case 0x03: return '@';
+        case 0x04: return '#';
+        case 0x05: return '$';
+        case 0x06: return '%';
+        case 0x07: return '^';
+        case 0x08: return '&';
+        case 0x09: return '*';
+        case 0x0A: return '(';
+        case 0x0B: return ')';
+        case 0x0C: return '_';
+        case 0x0D: return '+';
+        case 0x1A: return '{';
+        case 0x1B: return '}';
+        case 0x27: return ':';
+        case 0x28: return '"';
+        case 0x29: return '~';
+        case 0x2B: return '|';
+        case 0x33: return '<';
+        case 0x34: return '>';
+        case 0x35: return '?';
+        default: return c;
+    }
+}
+
 // Keyboard interrupt handler
 static void keyboard_callback(registers_t* regs) {
     (void)regs;  // Unused parameter
@@ -55,55 +95,55 @@ static void keyboard_callback(registers_t* regs) {
     // Handle control key state
     if (scancode == KEY_CTRL) {
         ctrl_pressed = true;
-        return;
+        goto done;
     } else if (scancode == KEY_CTRL_RELEASE) {
         ctrl_pressed = false;
-        return;
+        goto done;
     }
     
     // Handle alt key state
     if (scancode == KEY_ALT) {
         alt_pressed = true;
-        return;
+        goto done;
     } else if (scancode == KEY_ALT_RELEASE) {
         alt_pressed = false;
-        return;
+        goto done;
+    }
+
+    if (scancode == KEY_LEFT_SHIFT || scancode == KEY_RIGHT_SHIFT) {
+        shift_pressed = true;
+        goto done;
+    } else if (scancode == KEY_LEFT_SHIFT_RELEASE || scancode == KEY_RIGHT_SHIFT_RELEASE) {
+        shift_pressed = false;
+        goto done;
     }
     
     // Handle Alt+F1-F4 for virtual terminal switching
     if (alt_pressed && scancode >= KEY_F1 && scancode <= KEY_F4) {
         extern void vt_switch(int terminal);
         vt_switch(scancode - KEY_F1);  // F1=0, F2=1, etc.
-        return;
+        goto done;
     }
     
     if (!(scancode & 0x80)) {  // Key press
         // Handle special keys (arrow keys, etc)
-        if (scancode == KEY_UP || scancode == KEY_DOWN || 
+        if (scancode == KEY_UP || scancode == KEY_DOWN ||
             scancode == KEY_LEFT || scancode == KEY_RIGHT) {
             // Store escape sequence for arrow keys
-            uint8_t next_write = (kbd_write_pos + 1) % 256;
-            if (next_write != kbd_read_pos) {
+            // Check that all 3 slots are available before writing any
+            uint8_t pos1 = (kbd_write_pos + 1) % 256;
+            uint8_t pos2 = (kbd_write_pos + 2) % 256;
+            uint8_t pos3 = (kbd_write_pos + 3) % 256;
+            if (pos1 != kbd_read_pos && pos2 != kbd_read_pos && pos3 != kbd_read_pos) {
+                char arrow_char = 'A';  // Default UP
+                if (scancode == KEY_DOWN) arrow_char = 'B';
+                else if (scancode == KEY_RIGHT) arrow_char = 'C';
+                else if (scancode == KEY_LEFT) arrow_char = 'D';
+
                 kbd_buffer[kbd_write_pos] = '\033';  // ESC
-                kbd_write_pos = next_write;
-                
-                next_write = (kbd_write_pos + 1) % 256;
-                if (next_write != kbd_read_pos) {
-                    kbd_buffer[kbd_write_pos] = '[';
-                    kbd_write_pos = next_write;
-                    
-                    next_write = (kbd_write_pos + 1) % 256;
-                    if (next_write != kbd_read_pos) {
-                        // Map to ANSI sequences
-                        char arrow_char = 'A';  // Default UP
-                        if (scancode == KEY_DOWN) arrow_char = 'B';
-                        else if (scancode == KEY_RIGHT) arrow_char = 'C';
-                        else if (scancode == KEY_LEFT) arrow_char = 'D';
-                        
-                        kbd_buffer[kbd_write_pos] = arrow_char;
-                        kbd_write_pos = next_write;
-                    }
-                }
+                kbd_buffer[pos1] = '[';
+                kbd_buffer[pos2] = arrow_char;
+                kbd_write_pos = pos3;
             }
         } else if (scancode == KEY_TAB) {
             // TAB key - add to buffer as special character
@@ -113,7 +153,7 @@ static void keyboard_callback(registers_t* regs) {
                 kbd_write_pos = next_write;
             }
         } else {
-            char c = kbd_us[scancode];
+            char c = apply_shift(scancode, kbd_us[scancode]);
             if (c) {
                 // Check for Ctrl+C (SIGINT)
                 if (ctrl_pressed && (c == 'c' || c == 'C')) {
@@ -123,7 +163,7 @@ static void keyboard_callback(registers_t* regs) {
                     if (current && current->pid != 1) {  // Don't kill init
                         signal_send(current->pid, SIGINT);
                     }
-                    return;
+                    goto done;
                 }
 
                 // Check for Ctrl+Z (SIGTSTP)
@@ -134,7 +174,7 @@ static void keyboard_callback(registers_t* regs) {
                     if (current && current->pid != 1) {  // Don't stop init
                         signal_send(current->pid, SIGTSTP);
                     }
-                    return;
+                    goto done;
                 }
                 
                 // Add to buffer
@@ -151,6 +191,9 @@ static void keyboard_callback(registers_t* regs) {
             }
         }
     }
+
+done:
+    outb(0x20, 0x20);
 }
 
 // Check if keyboard has character available

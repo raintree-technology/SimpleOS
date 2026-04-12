@@ -15,6 +15,12 @@ typedef enum {
     PROCESS_STATE_TERMINATED
 } process_state_t;
 
+// Execution domain
+typedef enum {
+    PROCESS_KIND_KERNEL_THREAD,
+    PROCESS_KIND_USER
+} process_kind_t;
+
 // i386 context structure (32-bit)
 typedef struct {
     // Callee-saved registers (must be preserved across function calls)
@@ -37,6 +43,7 @@ typedef struct {
 typedef struct process {
     uint32_t pid;                    // Process ID
     char name[32];                   // Process name
+    process_kind_t kind;             // Kernel thread vs user process
 
     context_t context;               // CPU context
     process_state_t state;           // Current state
@@ -75,7 +82,9 @@ typedef struct process {
     struct process* next;           // Next process in queue
     struct process* prev;           // Previous process in queue
     
-    void (*entry_point)(void);      // Entry point for new processes
+    void (*entry_point)(void);      // Kernel-thread entry point
+    uint32_t user_entry;            // User-mode entry point
+    uint64_t wakeup_tick;           // Wake time for sleeping processes
 } process_t;
 
 // Maximum number of processes
@@ -86,6 +95,7 @@ typedef struct process {
 // Process management functions
 void process_init(void);
 process_t* process_create(const char* name, void (*entry_point)(void), uint32_t priority);
+process_t* process_create_user(const char* name, uint32_t priority);
 void process_destroy(process_t* process);
 void process_yield(void);
 void process_sleep(uint32_t ticks);
@@ -107,8 +117,12 @@ process_t* process_get_current(void);
 uint32_t process_get_pid(void);
 const char* process_get_name(void);
 process_state_t process_get_state(process_t* process);
+process_kind_t process_get_kind(process_t* process);
 
 // Debug
 void process_print_all(void);
+
+// User-mode bootstrap
+void process_enter_user_mode(void);
 
 #endif // PROCESS_H

@@ -1,7 +1,7 @@
-#include "../include/vt.h"
-#include "../include/terminal.h"
-#include "../include/string.h"
-#include "../include/ports.h"
+#include "drivers/vt.h"
+#include "drivers/terminal.h"
+#include "lib/string.h"
+#include "drivers/ports.h"
 
 // Virtual terminals
 static virtual_terminal_t terminals[NUM_VIRTUAL_TERMINALS];
@@ -71,13 +71,17 @@ void vt_putchar(char c) {
     } else if (c == '\t') {
         // Tab to next 8-character boundary
         vt->cursor_x = (vt->cursor_x + 8) & ~7;
+        if (vt->cursor_x >= 80) {
+            vt->cursor_x = 0;
+            vt->cursor_y++;
+        }
     } else if (c >= ' ' && c < 127) {
         // Regular character
         if (vt->cursor_x >= 80) {
             vt->cursor_x = 0;
             vt->cursor_y++;
         }
-        
+
         if (vt->cursor_y >= 25) {
             // Scroll up
             for (int i = 0; i < 24 * 80; i++) {
@@ -88,11 +92,22 @@ void vt_putchar(char c) {
             }
             vt->cursor_y = 24;
         }
-        
+
         vt->buffer[vt->cursor_y * 80 + vt->cursor_x] = c | (vt->color << 8);
         vt->cursor_x++;
     }
-    
+
+    // Scroll check for newline/tab (shared with regular char path above)
+    if (vt->cursor_y >= 25) {
+        for (int i = 0; i < 24 * 80; i++) {
+            vt->buffer[i] = vt->buffer[i + 80];
+        }
+        for (int i = 24 * 80; i < 25 * 80; i++) {
+            vt->buffer[i] = ' ' | (vt->color << 8);
+        }
+        vt->cursor_y = 24;
+    }
+
     // Update physical screen if this is the current terminal
     if (vt == &terminals[current_terminal]) {
         vt_refresh();
@@ -100,11 +115,65 @@ void vt_putchar(char c) {
     }
 }
 
-// Write string to current virtual terminal
+// Internal: write char to VT buffer without refreshing screen
+static void vt_putchar_norefresh(char c) {
+    virtual_terminal_t* vt = &terminals[current_terminal];
+
+    if (c == '\n') {
+        vt->cursor_x = 0;
+        vt->cursor_y++;
+    } else if (c == '\r') {
+        vt->cursor_x = 0;
+    } else if (c == '\b') {
+        if (vt->cursor_x > 0) {
+            vt->cursor_x--;
+            vt->buffer[vt->cursor_y * 80 + vt->cursor_x] = ' ' | (vt->color << 8);
+        }
+    } else if (c == '\t') {
+        vt->cursor_x = (vt->cursor_x + 8) & ~7;
+        if (vt->cursor_x >= 80) {
+            vt->cursor_x = 0;
+            vt->cursor_y++;
+        }
+    } else if (c >= ' ' && c < 127) {
+        if (vt->cursor_x >= 80) {
+            vt->cursor_x = 0;
+            vt->cursor_y++;
+        }
+
+        if (vt->cursor_y >= 25) {
+            for (int i = 0; i < 24 * 80; i++) {
+                vt->buffer[i] = vt->buffer[i + 80];
+            }
+            for (int i = 24 * 80; i < 25 * 80; i++) {
+                vt->buffer[i] = ' ' | (vt->color << 8);
+            }
+            vt->cursor_y = 24;
+        }
+
+        vt->buffer[vt->cursor_y * 80 + vt->cursor_x] = c | (vt->color << 8);
+        vt->cursor_x++;
+    }
+
+    if (vt->cursor_y >= 25) {
+        for (int i = 0; i < 24 * 80; i++) {
+            vt->buffer[i] = vt->buffer[i + 80];
+        }
+        for (int i = 24 * 80; i < 25 * 80; i++) {
+            vt->buffer[i] = ' ' | (vt->color << 8);
+        }
+        vt->cursor_y = 24;
+    }
+}
+
+// Write string to current virtual terminal (single refresh at end)
 void vt_writestring(const char* str) {
     while (*str) {
-        vt_putchar(*str++);
+        vt_putchar_norefresh(*str++);
     }
+    vt_refresh();
+    virtual_terminal_t* vt = &terminals[current_terminal];
+    terminal_set_cursor(vt->cursor_x, vt->cursor_y);
 }
 
 // Clear current virtual terminal

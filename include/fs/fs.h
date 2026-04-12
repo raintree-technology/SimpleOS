@@ -36,16 +36,6 @@ typedef struct {
     uint32_t inode;
 } fs_dirent_t;
 
-// File operations
-typedef struct {
-    int (*read)(fs_node_t* node, uint32_t offset, uint32_t size, uint8_t* buffer);
-    int (*write)(fs_node_t* node, uint32_t offset, uint32_t size, uint8_t* buffer);
-    void (*open)(fs_node_t* node);
-    void (*close)(fs_node_t* node);
-    fs_dirent_t* (*readdir)(fs_node_t* node, uint32_t index);
-    fs_node_t* (*finddir)(fs_node_t* node, char* name);
-} fs_ops_t;
-
 // RAM filesystem structures
 typedef struct {
     uint8_t data[FS_BLOCK_SIZE];
@@ -57,6 +47,7 @@ typedef struct {
     fs_block_t blocks[FS_MAX_BLOCKS];
     uint32_t free_blocks[FS_MAX_BLOCKS / 32];  // Bitmap
     uint32_t next_inode;
+    uint32_t next_free_hint;  // Hint for faster block allocation
     fs_node_t* root;
 } ramfs_t;
 
@@ -71,10 +62,13 @@ void fs_open(fs_node_t* node);
 void fs_close(fs_node_t* node);
 fs_dirent_t* fs_readdir(fs_node_t* node, uint32_t index);
 fs_node_t* fs_finddir(fs_node_t* node, char* name);
+fs_node_t* fs_resolve_path(const char* path);
 
 // RAM filesystem specific
 fs_node_t* ramfs_create_file(fs_node_t* parent, const char* name);
 fs_node_t* ramfs_create_dir(fs_node_t* parent, const char* name);
+fs_node_t* ramfs_create_file_path(const char* path);
+fs_node_t* ramfs_create_dir_path(const char* path);
 int ramfs_delete(fs_node_t* parent, const char* name);
 
 #endif

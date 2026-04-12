@@ -1,18 +1,19 @@
 #include <stdint.h>
 #include <stddef.h>
-#include "../include/isr.h"
-#include "../include/terminal.h"
-#include "../include/process.h"
-#include "../include/scheduler.h"
-#include "../include/timer.h"
-#include "../include/keyboard.h"
-#include "../include/kmalloc.h"
-#include "../include/vmm.h"
-#include "../include/string.h"
-#include "../include/pmm.h"
-#include "../include/fs.h"
-#include "../include/pipe.h"
-#include "../include/signal.h"
+#include "kernel/isr.h"
+#include "drivers/terminal.h"
+#include "kernel/process.h"
+#include "kernel/scheduler.h"
+#include "drivers/timer.h"
+#include "drivers/keyboard.h"
+#include "mm/kmalloc.h"
+#include "mm/vmm.h"
+#include "lib/string.h"
+#include "mm/pmm.h"
+#include "fs/fs.h"
+#include "ipc/pipe.h"
+#include "ipc/signal.h"
+#include "lib/elf.h"
 
 // System call numbers
 #define SYS_EXIT    1
@@ -38,6 +39,7 @@
 #define STDIN   0
 #define STDOUT  1
 #define STDERR  2
+#define O_CREAT 0x1
 
 // Maximum number of system calls
 #define MAX_SYSCALLS 64
@@ -60,11 +62,94 @@ typedef struct {
 
 // Forward declarations
 static fd_entry_t* get_fd_table(void);
-void builtin_hello_main(void);
-void shell_main(void);
-void init_main(void);
 static void string_concat(char* dest, const char* src);
 static void int_to_string(uint32_t num, char* buf);
+extern void interrupt_return_trampoline(void);
+static uint32_t sys_fork_with_regs(registers_t* regs);
+static uint32_t sys_execve_with_regs(uint32_t path_ptr, uint32_t argv_ptr, uint32_t envp_ptr,
+                                     uint32_t arg4, uint32_t arg5, registers_t* regs);
+
+static int is_user_process(process_t* process) {
+    return process && process->kind == PROCESS_KIND_USER;
+}
+
+static int validate_user_buffer(process_t* process, uint32_t addr, size_t len, bool write) {
+    if (!is_user_process(process) || len == 0) {
+        return 0;
+    }
+
+    if (addr < USER_VADDR_MIN || addr >= KERNEL_BASE) {
+        return -1;
+    }
+
+    if (addr + len < addr || addr + len > KERNEL_BASE) {
+        return -1;
+    }
+
+    uint32_t start = addr & ~(PAGE_SIZE - 1);
+    uint32_t end = (addr + len - 1) & ~(PAGE_SIZE - 1);
+
+    for (uint32_t page = start; page <= end; page += PAGE_SIZE) {
+        uint32_t flags = vmm_get_page_flags(process->page_directory, page);
+        if (!(flags & PAGE_PRESENT) || !(flags & PAGE_USER)) {
+            return -1;
+        }
+        if (write && !(flags & PAGE_WRITABLE)) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int copy_from_user(void* dst, uint32_t src, size_t len) {
+    process_t* current = process_get_current();
+    if (validate_user_buffer(current, src, len, false) < 0) {
+        return -1;
+    }
+
+    memcpy(dst, (const void*)src, len);
+    return 0;
+}
+
+static int copy_to_user(uint32_t dst, const void* src, size_t len) {
+    process_t* current = process_get_current();
+    if (validate_user_buffer(current, dst, len, true) < 0) {
+        return -1;
+    }
+
+    memcpy((void*)dst, src, len);
+    return 0;
+}
+
+static int copy_string_from_user(char* dst, size_t dst_len, uint32_t src) {
+    process_t* current = process_get_current();
+    size_t i;
+
+    if (dst_len == 0) {
+        return -1;
+    }
+
+    if (!is_user_process(current)) {
+        strncpy(dst, (const char*)src, dst_len - 1);
+        dst[dst_len - 1] = '\0';
+        return 0;
+    }
+
+    for (i = 0; i < dst_len - 1; i++) {
+        if (validate_user_buffer(current, src + i, 1, false) < 0) {
+            return -1;
+        }
+
+        dst[i] = ((const char*)src)[i];
+        if (dst[i] == '\0') {
+            return 0;
+        }
+    }
+
+    dst[dst_len - 1] = '\0';
+    return -1;
+}
 
 // sys_exit: Terminate current process
 static uint32_t sys_exit(uint32_t status, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
@@ -81,24 +166,21 @@ static uint32_t sys_exit(uint32_t status, uint32_t arg2, uint32_t arg3, uint32_t
     terminal_print_int((int)status);
     terminal_writestring("\n");
 
-    current->exit_status = (int)status;
-    current->state = PROCESS_STATE_ZOMBIE;
-
-    if (current->parent_pid == 0) {
-        process_exit((int)status);
-    } else {
-        schedule();
-    }
-
-    return 0;
+    process_exit((int)status);
+    return (uint32_t)-1;
 }
 
 // sys_write: Write to file descriptor
 static uint32_t sys_write(uint32_t fd, uint32_t buf_ptr, uint32_t count, uint32_t arg4, uint32_t arg5) {
     (void)arg4; (void)arg5;
+    process_t* current = process_get_current();
 
     if (buf_ptr == 0 || count == 0) {
         return 0;
+    }
+
+    if (validate_user_buffer(current, buf_ptr, count, false) < 0) {
+        return (uint32_t)-1;
     }
 
     const char* buf = (const char*)buf_ptr;
@@ -130,9 +212,14 @@ static uint32_t sys_write(uint32_t fd, uint32_t buf_ptr, uint32_t count, uint32_
 // sys_read: Read from file descriptor
 static uint32_t sys_read(uint32_t fd, uint32_t buf_ptr, uint32_t count, uint32_t arg4, uint32_t arg5) {
     (void)arg4; (void)arg5;
+    process_t* current = process_get_current();
 
     if (buf_ptr == 0 || count == 0) {
         return 0;
+    }
+
+    if (validate_user_buffer(current, buf_ptr, count, true) < 0) {
+        return (uint32_t)-1;
     }
 
     char* buf = (char*)buf_ptr;
@@ -149,7 +236,7 @@ static uint32_t sys_read(uint32_t fd, uint32_t buf_ptr, uint32_t count, uint32_t
                     break;
                 }
             } else {
-                asm volatile("hlt");
+                process_yield();
             }
         }
 
@@ -195,13 +282,32 @@ static uint32_t sys_sbrk(uint32_t increment, uint32_t arg2, uint32_t arg3, uint3
         return (uint32_t)-1;
     }
 
+    if (!is_user_process(current)) {
+        return (uint32_t)-1;
+    }
+
     uint32_t old_heap = current->heap_current;
 
     if (increment == 0) {
         return old_heap;
     }
 
-    uint32_t new_heap = current->heap_current + (int32_t)increment;
+    int32_t signed_inc = (int32_t)increment;
+    uint32_t new_heap;
+
+    // Check for overflow/underflow before computing
+    if (signed_inc > 0) {
+        if (old_heap > (uint32_t)0xFFFFFFFF - (uint32_t)signed_inc) {
+            return (uint32_t)-1;
+        }
+        new_heap = old_heap + (uint32_t)signed_inc;
+    } else {
+        uint32_t abs_dec = (uint32_t)(-signed_inc);
+        if (abs_dec > old_heap) {
+            return (uint32_t)-1;
+        }
+        new_heap = old_heap - abs_dec;
+    }
 
     if (new_heap > current->heap_max) {
         return (uint32_t)-1;
@@ -231,9 +337,17 @@ static uint32_t sys_sbrk(uint32_t increment, uint32_t arg2, uint32_t arg3, uint3
 // sys_fork: Create a child process
 static uint32_t sys_fork(uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
     (void)arg1; (void)arg2; (void)arg3; (void)arg4; (void)arg5;
+    return (uint32_t)-1;
+}
 
+static uint32_t sys_fork_with_regs(registers_t* regs) {
     process_t* parent = process_get_current();
     if (!parent) {
+        return (uint32_t)-1;
+    }
+
+    if (!regs || !is_user_process(parent) || (regs->cs & 0x3) != 0x3) {
+        terminal_writestring("[FORK] Refusing to fork a kernel thread\n");
         return (uint32_t)-1;
     }
 
@@ -258,6 +372,7 @@ static uint32_t sys_fork(uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t a
     }
 
     child->context = parent->context;
+    child->kind = parent->kind;
     child->parent_pid = parent->pid;
     child->state = PROCESS_STATE_READY;
     child->priority = parent->priority;
@@ -287,6 +402,20 @@ static uint32_t sys_fork(uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t a
         }
     }
 
+    child->user_entry = parent->user_entry;
+    registers_t* child_regs =
+        (registers_t*)((uint8_t*)child->kernel_stack + KERNEL_STACK_SIZE - sizeof(registers_t));
+    *child_regs = *regs;
+    child_regs->eax = 0;
+
+    child->context.edi = 0;
+    child->context.esi = 0;
+    child->context.ebx = 0;
+    child->context.ebp = 0;
+    child->context.esp = (uint32_t)child_regs;
+    child->context.eip = (uint32_t)interrupt_return_trampoline;
+    child->context.eflags = regs->eflags;
+
     ready_queue_push(child);
 
     terminal_writestring("[FORK] Created child PID ");
@@ -311,8 +440,14 @@ static uint32_t sys_wait(uint32_t status_ptr, uint32_t arg2, uint32_t arg3, uint
         process_t* child = find_zombie_child(parent->pid);
         if (child) {
             if (status_ptr) {
-                int* status = (int*)status_ptr;
-                *status = child->exit_status;
+                int status = child->exit_status;
+                if (copy_to_user(status_ptr, &status, sizeof(status)) < 0) {
+                    if (!is_user_process(parent)) {
+                        *(int*)status_ptr = status;
+                    } else {
+                        return (uint32_t)-1;
+                    }
+                }
             }
 
             uint32_t child_pid = child->pid;
@@ -331,56 +466,175 @@ static uint32_t sys_wait(uint32_t status_ptr, uint32_t arg2, uint32_t arg3, uint
     }
 }
 
-// sys_execve: Execute a new program
 static uint32_t sys_execve(uint32_t path_ptr, uint32_t argv_ptr, uint32_t envp_ptr, uint32_t arg4, uint32_t arg5) {
-    (void)argv_ptr; (void)envp_ptr; (void)arg4; (void)arg5;
+    (void)path_ptr; (void)argv_ptr; (void)envp_ptr; (void)arg4; (void)arg5;
+    return (uint32_t)-1;
+}
 
-    const char* path = (const char*)path_ptr;
+// Maximum argv entries and total string data for execve
+#define EXEC_MAX_ARGC 16
+#define EXEC_MAX_STRINGS 2048
+
+static uint32_t sys_execve_with_regs(uint32_t path_ptr, uint32_t argv_ptr, uint32_t envp_ptr,
+                                     uint32_t arg4, uint32_t arg5, registers_t* regs) {
+    (void)envp_ptr; (void)arg4; (void)arg5;
+
     process_t* current = process_get_current();
+    char path[128];
+    fs_node_t* node;
+    uint8_t* image = NULL;
+    process_t new_image;
+    uint32_t* old_pd;
 
-    if (!current || !path) {
+    // Kernel buffer for argv strings (copied before address space switch)
+    char argv_buf[EXEC_MAX_STRINGS];
+    int argv_offsets[EXEC_MAX_ARGC];  // offset into argv_buf for each arg
+    int argv_lens[EXEC_MAX_ARGC];     // length including null terminator
+    int exec_argc = 0;
+    int argv_total = 0;
+
+    if (!current || !regs || !is_user_process(current) || path_ptr == 0) {
         return (uint32_t)-1;
+    }
+
+    if (copy_string_from_user(path, sizeof(path), path_ptr) < 0) {
+        return (uint32_t)-1;
+    }
+
+    // Copy argv strings from caller's address space into kernel buffer
+    if (argv_ptr) {
+        for (int i = 0; i < EXEC_MAX_ARGC; i++) {
+            uint32_t str_ptr;
+            if (copy_from_user(&str_ptr, argv_ptr + i * sizeof(uint32_t), sizeof(uint32_t)) < 0) {
+                break;
+            }
+            if (str_ptr == 0) break;  // NULL terminator
+
+            char arg[256];
+            if (copy_string_from_user(arg, sizeof(arg), str_ptr) < 0) {
+                break;
+            }
+
+            int len = 0;
+            while (arg[len]) len++;
+            len++;  // include null terminator
+
+            if (argv_total + len > EXEC_MAX_STRINGS) break;
+
+            argv_offsets[exec_argc] = argv_total;
+            argv_lens[exec_argc] = len;
+            memcpy(argv_buf + argv_total, arg, len);
+            argv_total += len;
+            exec_argc++;
+        }
     }
 
     terminal_writestring("[EXEC] Executing: ");
     terminal_writestring(path);
     terminal_writestring("\n");
 
-    struct builtin_program {
-        const char* path;
-        void (*entry)(void);
-        const char* name;
-    } builtins[] = {
-        {"/bin/hello", builtin_hello_main, "hello"},
-        {"/bin/shell", shell_main, "shell"},
-        {"/bin/init", init_main, "init"},
-        {0, 0, 0}
-    };
-
-    for (int i = 0; builtins[i].path; i++) {
-        if (strcmp(path, builtins[i].path) == 0) {
-            terminal_writestring("[EXEC] Loading built-in program: ");
-            terminal_writestring(builtins[i].name);
-            terminal_writestring("\n");
-
-            vmm_clear_user_space(current->page_directory);
-
-            // 32-bit context
-            current->context.eip = (uint32_t)builtins[i].entry;
-            current->context.esp = USER_STACK_TOP - 16;
-            current->context.eflags = 0x202;
-
-            strncpy(current->name, builtins[i].name, 31);
-            current->name[31] = '\0';
-
-            return 0;
-        }
+    node = fs_resolve_path(path);
+    if (!node || node->type != FS_TYPE_FILE || node->size == 0) {
+        terminal_writestring("[EXEC] Program not found\n");
+        return (uint32_t)-1;
     }
 
-    terminal_writestring("[EXEC] Program not found: ");
-    terminal_writestring(path);
-    terminal_writestring("\n");
-    return (uint32_t)-1;
+    image = (uint8_t*)kmalloc(node->size);
+    if (!image) {
+        return (uint32_t)-1;
+    }
+
+    if (fs_read(node, 0, node->size, image) != (int)node->size) {
+        kfree(image);
+        return (uint32_t)-1;
+    }
+
+    memset(&new_image, 0, sizeof(new_image));
+    new_image.kind = PROCESS_KIND_USER;
+    new_image.page_directory = vmm_create_address_space();
+    if (!new_image.page_directory) {
+        kfree(image);
+        return (uint32_t)-1;
+    }
+
+    if (vmm_setup_user_stack(&new_image) < 0 ||
+        vmm_setup_user_heap(&new_image) < 0 ||
+        elf_load(&new_image, image, node->size) < 0) {
+        vmm_destroy_address_space(new_image.page_directory);
+        kfree(image);
+        return (uint32_t)-1;
+    }
+
+    old_pd = current->page_directory;
+
+    current->page_directory = new_image.page_directory;
+    current->heap_start = new_image.heap_start;
+    current->heap_current = new_image.heap_current;
+    current->heap_max = new_image.heap_max;
+    current->stack_bottom = new_image.stack_bottom;
+    current->stack_top = new_image.stack_top;
+    current->pages_allocated = new_image.pages_allocated;
+    current->page_faults = 0;
+    current->user_entry = new_image.user_entry;
+
+    vmm_switch_address_space(current->page_directory);
+    vmm_destroy_address_space(old_pd);
+    kfree(image);
+
+    // Set up user stack with argc/argv
+    // Layout (growing downward):
+    //   [string data]        <- arg strings stored here
+    //   argv[argc] = NULL
+    //   argv[1] pointer
+    //   argv[0] pointer
+    //   argc                 <- ESP points here
+    uint32_t sp = current->stack_top;
+
+    // Pre-check: ensure argv data fits within the user stack
+    // Need: argv_total bytes for strings + (exec_argc+1)*4 for pointers + 8 for argc/argv_base
+    uint32_t needed = (uint32_t)argv_total + ((uint32_t)exec_argc + 1) * 4 + 8 + 4; // +4 for alignment slack
+    if (needed > sp - current->stack_bottom) {
+        // Not enough stack space for argv — fail the exec
+        return (uint32_t)-1;
+    }
+
+    // Copy arg strings onto user stack and record their user-space addresses
+    uint32_t str_addrs[EXEC_MAX_ARGC];
+    for (int i = exec_argc - 1; i >= 0; i--) {
+        sp -= argv_lens[i];
+        memcpy((void*)sp, argv_buf + argv_offsets[i], argv_lens[i]);
+        str_addrs[i] = sp;
+    }
+
+    // Align to 4 bytes
+    sp &= ~3;
+
+    // Push NULL terminator for argv
+    sp -= 4;
+    *(uint32_t*)sp = 0;
+
+    // Push argv pointers (reverse order so argv[0] is at lowest address)
+    for (int i = exec_argc - 1; i >= 0; i--) {
+        sp -= 4;
+        *(uint32_t*)sp = str_addrs[i];
+    }
+
+    // Save argv pointer (points to argv[0])
+    uint32_t argv_base = sp;
+
+    // Push argv pointer
+    sp -= 4;
+    *(uint32_t*)sp = argv_base;
+
+    // Push argc
+    sp -= 4;
+    *(uint32_t*)sp = (uint32_t)exec_argc;
+
+    regs->eip = current->user_entry;
+    regs->esp = sp;
+    regs->eax = 0;
+
+    return 0;
 }
 
 // sys_ps: List processes
@@ -460,25 +714,6 @@ static void string_concat(char* dest, const char* src) {
     *dest = '\0';
 }
 
-// Built-in programs simplified for 32-bit initial port
-void builtin_hello_main(void) {
-    terminal_writestring("[BUILTIN] Hello program started!\n");
-    terminal_writestring("Hello from exec program!\n");
-
-    // Simple exit - direct function call instead of syscall for now
-    process_exit(42);
-}
-
-// init simplified for 32-bit
-void init_main(void) {
-    terminal_writestring("[init] Starting SimpleOS init process...\n");
-    terminal_writestring("[init] Init demo disabled in initial 32-bit port\n");
-
-    while (1) {
-        asm volatile("hlt");
-    }
-}
-
 // Get current process's fd table
 static fd_entry_t* get_fd_table(void) {
     process_t* current = process_get_current();
@@ -506,12 +741,38 @@ void init_process_fd_table(process_t* proc) {
     }
 }
 
+// Close a single fd entry, releasing its resources
+static void close_fd_entry(fd_entry_t* entry) {
+    if (entry->is_pipe && entry->pipe) {
+        pipe_destroy(entry->pipe);
+    } else if (entry->node) {
+        fs_close(entry->node);
+    }
+    entry->node = NULL;
+    entry->pipe = NULL;
+    entry->offset = 0;
+    entry->flags = 0;
+    entry->is_pipe = 0;
+}
+
+// Close all open file descriptors for a process (called during destroy/free)
+void cleanup_process_fds(process_t* proc) {
+    if (!proc || !proc->fd_table) return;
+
+    fd_entry_t* fds = (fd_entry_t*)proc->fd_table;
+    for (int i = 0; i < MAX_FDS; i++) {
+        if (fds[i].node || fds[i].pipe) {
+            close_fd_entry(&fds[i]);
+        }
+    }
+}
+
 // sys_open: Open a file
 static uint32_t sys_open(uint32_t path_ptr, uint32_t flags, uint32_t mode, uint32_t arg4, uint32_t arg5) {
-    (void)flags; (void)mode; (void)arg4; (void)arg5;
-
-    const char* path = (const char*)path_ptr;
-    if (!path) return (uint32_t)-1;
+    (void)mode; (void)arg4; (void)arg5;
+    char path[128];
+    if (!path_ptr) return (uint32_t)-1;
+    if (copy_string_from_user(path, sizeof(path), path_ptr) < 0) return (uint32_t)-1;
 
     fd_entry_t* fd_table = get_fd_table();
     if (!fd_table) return (uint32_t)-1;
@@ -526,16 +787,13 @@ static uint32_t sys_open(uint32_t path_ptr, uint32_t flags, uint32_t mode, uint3
 
     if (fd == -1) return (uint32_t)-1;
 
-    fs_node_t* root = fs_root();
-    if (!root) return (uint32_t)-1;
-
-    if (path[0] == '/') path++;
-
-    fs_node_t* node = fs_finddir(root, (char*)path);
-    if (!node) {
-        node = ramfs_create_file(root, path);
+    fs_node_t* node = fs_resolve_path(path);
+    if (!node && (flags & O_CREAT)) {
+        node = ramfs_create_file_path(path);
         if (!node) return (uint32_t)-1;
     }
+
+    if (!node) return (uint32_t)-1;
 
     fd_table[fd].node = node;
     fd_table[fd].offset = 0;
@@ -554,11 +812,11 @@ static uint32_t sys_close(uint32_t fd, uint32_t arg2, uint32_t arg3, uint32_t ar
         return (uint32_t)-1;
     }
 
-    fd_table[fd].node = NULL;
-    fd_table[fd].pipe = NULL;
-    fd_table[fd].offset = 0;
-    fd_table[fd].flags = 0;
-    fd_table[fd].is_pipe = 0;
+    if (!fd_table[fd].node && !fd_table[fd].pipe) {
+        return (uint32_t)-1;
+    }
+
+    close_fd_entry(&fd_table[fd]);
 
     return 0;
 }
@@ -566,25 +824,28 @@ static uint32_t sys_close(uint32_t fd, uint32_t arg2, uint32_t arg3, uint32_t ar
 // sys_stat: Get file information
 static uint32_t sys_stat(uint32_t path_ptr, uint32_t stat_ptr, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
     (void)arg3; (void)arg4; (void)arg5;
-
-    const char* path = (const char*)path_ptr;
-    if (!path || !stat_ptr) return (uint32_t)-1;
+    char path[128];
+    if (!path_ptr || !stat_ptr) return (uint32_t)-1;
+    if (copy_string_from_user(path, sizeof(path), path_ptr) < 0) return (uint32_t)-1;
 
     struct stat {
         uint32_t size;
         uint32_t type;
-    } *st = (struct stat*)stat_ptr;
+    } st;
 
-    fs_node_t* root = fs_root();
-    if (!root) return (uint32_t)-1;
-
-    if (path[0] == '/') path++;
-
-    fs_node_t* node = fs_finddir(root, (char*)path);
+    fs_node_t* node = fs_resolve_path(path);
     if (!node) return (uint32_t)-1;
 
-    st->size = node->size;
-    st->type = node->type;
+    st.size = node->size;
+    st.type = node->type;
+
+    if (copy_to_user(stat_ptr, &st, sizeof(st)) < 0) {
+        if (!is_user_process(process_get_current())) {
+            memcpy((void*)stat_ptr, &st, sizeof(st));
+        } else {
+            return (uint32_t)-1;
+        }
+    }
 
     return 0;
 }
@@ -592,16 +853,11 @@ static uint32_t sys_stat(uint32_t path_ptr, uint32_t stat_ptr, uint32_t arg3, ui
 // sys_mkdir: Create directory
 static uint32_t sys_mkdir(uint32_t path_ptr, uint32_t mode, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
     (void)mode; (void)arg3; (void)arg4; (void)arg5;
+    char path[128];
+    if (!path_ptr) return (uint32_t)-1;
+    if (copy_string_from_user(path, sizeof(path), path_ptr) < 0) return (uint32_t)-1;
 
-    const char* path = (const char*)path_ptr;
-    if (!path) return (uint32_t)-1;
-
-    fs_node_t* root = fs_root();
-    if (!root) return (uint32_t)-1;
-
-    if (path[0] == '/') path++;
-
-    fs_node_t* dir = ramfs_create_dir(root, path);
+    fs_node_t* dir = ramfs_create_dir_path(path);
     if (!dir) return (uint32_t)-1;
 
     return 0;
@@ -610,6 +866,7 @@ static uint32_t sys_mkdir(uint32_t path_ptr, uint32_t mode, uint32_t arg3, uint3
 // sys_readdir: Read directory entries
 static uint32_t sys_readdir(uint32_t fd, uint32_t dirent_ptr, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
     (void)arg3; (void)arg4; (void)arg5;
+    if (!dirent_ptr) return (uint32_t)-1;
 
     fd_entry_t* fd_table = get_fd_table();
     if (!fd_table || fd >= MAX_FDS || !fd_table[fd].node) {
@@ -624,14 +881,22 @@ static uint32_t sys_readdir(uint32_t fd, uint32_t dirent_ptr, uint32_t arg3, uin
     struct dirent {
         char name[32];
         uint32_t type;
-    } *de = (struct dirent*)dirent_ptr;
+    } de;
 
     fs_dirent_t* entry = fs_readdir(node, fd_table[fd].offset);
     if (!entry) return 0;
 
-    strncpy(de->name, entry->name, 31);
-    de->name[31] = '\0';
-    de->type = FS_TYPE_FILE;
+    strncpy(de.name, entry->name, 31);
+    de.name[31] = '\0';
+    de.type = FS_TYPE_FILE;
+
+    if (copy_to_user(dirent_ptr, &de, sizeof(de)) < 0) {
+        if (!is_user_process(process_get_current())) {
+            memcpy((void*)dirent_ptr, &de, sizeof(de));
+        } else {
+            return (uint32_t)-1;
+        }
+    }
 
     fd_table[fd].offset++;
     return 1;
@@ -650,9 +915,8 @@ static uint32_t syscall_kill(uint32_t pid, uint32_t sig, uint32_t arg3, uint32_t
 // syscall_pipe: Create a pipe
 static uint32_t syscall_pipe(uint32_t pipefd_ptr, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
     (void)arg2; (void)arg3; (void)arg4; (void)arg5;
-
-    int* pipefd = (int*)pipefd_ptr;
-    if (!pipefd) return (uint32_t)-1;
+    int pipefd[2];
+    if (!pipefd_ptr) return (uint32_t)-1;
 
     fd_entry_t* fd_table = get_fd_table();
     if (!fd_table) return (uint32_t)-1;
@@ -687,6 +951,14 @@ static uint32_t syscall_pipe(uint32_t pipefd_ptr, uint32_t arg2, uint32_t arg3, 
 
     pipefd[0] = read_fd;
     pipefd[1] = write_fd;
+
+    if (copy_to_user(pipefd_ptr, pipefd, sizeof(pipefd)) < 0) {
+        if (!is_user_process(process_get_current())) {
+            memcpy((void*)pipefd_ptr, pipefd, sizeof(pipefd));
+        } else {
+            return (uint32_t)-1;
+        }
+    }
 
     return 0;
 }
@@ -734,6 +1006,16 @@ void syscall_handler(registers_t* regs) {
     uint32_t arg3 = regs->edx;
     uint32_t arg4 = regs->esi;
     uint32_t arg5 = regs->edi;
+
+    if (syscall_num == SYS_FORK) {
+        regs->eax = sys_fork_with_regs(regs);
+        return;
+    }
+
+    if (syscall_num == SYS_EXECVE) {
+        regs->eax = sys_execve_with_regs(arg1, arg2, arg3, arg4, arg5, regs);
+        return;
+    }
 
     if (syscall_num >= MAX_SYSCALLS || syscall_table[syscall_num] == NULL) {
         regs->eax = (uint32_t)-1;

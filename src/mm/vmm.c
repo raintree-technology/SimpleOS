@@ -1,7 +1,7 @@
-#include "../include/vmm.h"
-#include "../include/pmm.h"
-#include "../include/terminal.h"
-#include "../include/panic.h"
+#include "mm/vmm.h"
+#include "mm/pmm.h"
+#include "drivers/terminal.h"
+#include "kernel/panic.h"
 #include <stddef.h>
 
 // Current kernel page directory (set during boot)
@@ -49,11 +49,9 @@ uint32_t* vmm_create_address_space(void) {
         new_pd[i] = 0;
     }
 
-    // Copy kernel mappings (upper quarter of address space, 768-1023)
-    // Kernel space is at 0xC0000000 and above in higher-half design
-    // For now, copy the identity-mapped first 4MB for kernel access
+    // Share only the kernel's low identity-mapped window.
     if (page_directory) {
-        for (int i = 0; i < ENTRIES_PER_TABLE; i++) {
+        for (int i = 0; i < KERNEL_SHARED_PDE_COUNT; i++) {
             if (page_directory[i] & PAGE_PRESENT) {
                 new_pd[i] = page_directory[i];
             }
@@ -63,7 +61,7 @@ uint32_t* vmm_create_address_space(void) {
     return new_pd;
 }
 
-// Free a page table
+// Free a page table (uses unref for COW-aware freeing)
 static void free_pt(uint32_t pt_phys) {
     uint32_t* pt = (uint32_t*)pt_phys;
 
@@ -73,7 +71,7 @@ static void free_pt(uint32_t pt_phys) {
             uint32_t page_phys = pt[i] & ~0xFFF;
             // Only free user pages (PAGE_USER flag set)
             if (pt[i] & PAGE_USER) {
-                pmm_free_page((void*)page_phys);
+                pmm_unref_page((void*)page_phys);
             }
         }
     }
@@ -88,11 +86,8 @@ void vmm_destroy_address_space(uint32_t* pd_to_destroy) {
         return;  // Don't destroy kernel page directory
     }
 
-    // Free user space page tables (entries 0-767, below 0xC0000000)
-    // Entries 768+ are kernel space, shared across processes
-    for (int i = 0; i < 768; i++) {
+    for (int i = PD_INDEX(USER_VADDR_MIN); i < PD_INDEX(KERNEL_BASE); i++) {
         if (pd_to_destroy[i] & PAGE_PRESENT) {
-            // Only free if it's a user-mode page table
             if (pd_to_destroy[i] & PAGE_USER) {
                 free_pt(pd_to_destroy[i] & ~0xFFF);
             }
@@ -113,10 +108,13 @@ int vmm_map_page(uint32_t* pd, uint32_t virt, uint32_t phys, uint32_t flags) {
     size_t pd_idx = PD_INDEX(virt);
     size_t pt_idx = PT_INDEX(virt);
 
-    // Determine flags for page table entry in page directory
+    if ((flags & PAGE_USER) && (virt < USER_VADDR_MIN || virt >= KERNEL_BASE)) {
+        return -1;
+    }
+
     uint32_t pd_flags = PAGE_WRITABLE;
-    if (virt < KERNEL_BASE) {
-        pd_flags |= PAGE_USER;  // User space pages
+    if (flags & PAGE_USER) {
+        pd_flags |= PAGE_USER;
     }
 
     // Get or create page table
@@ -170,6 +168,22 @@ uint32_t vmm_get_physical(uint32_t* pd, uint32_t virt) {
     return (pt[pt_idx] & ~0xFFF) | (virt & 0xFFF);
 }
 
+uint32_t vmm_get_page_flags(uint32_t* pd, uint32_t virt) {
+    size_t pd_idx = PD_INDEX(virt);
+    size_t pt_idx = PT_INDEX(virt);
+
+    if (!(pd[pd_idx] & PAGE_PRESENT)) {
+        return 0;
+    }
+
+    uint32_t* pt = (uint32_t*)(pd[pd_idx] & ~0xFFF);
+    if (!(pt[pt_idx] & PAGE_PRESENT)) {
+        return 0;
+    }
+
+    return pt[pt_idx] & 0xFFF;
+}
+
 // Switch to a different address space
 void vmm_switch_address_space(uint32_t* new_pd) {
     asm volatile("mov %0, %%cr3" : : "r"(new_pd) : "memory");
@@ -177,18 +191,20 @@ void vmm_switch_address_space(uint32_t* new_pd) {
 
 // Allocate user pages for a process
 int vmm_alloc_user_pages(process_t* process, uint32_t virt_addr, size_t count) {
-    // Ensure user space address
-    if (virt_addr >= KERNEL_BASE) {
+    if (virt_addr < USER_VADDR_MIN || virt_addr >= KERNEL_BASE) {
         return -1;
     }
 
     for (size_t i = 0; i < count; i++) {
+        uint32_t virt = virt_addr + (i * PAGE_SIZE);
+        if (virt < USER_VADDR_MIN || virt >= KERNEL_BASE) {
+            return -1;
+        }
+
         void* phys_page = pmm_alloc_page();
         if (!phys_page) {
             return -1;
         }
-
-        uint32_t virt = virt_addr + (i * PAGE_SIZE);
         uint32_t phys = (uint32_t)phys_page;
 
         if (vmm_map_page(process->page_directory, virt, phys,
@@ -223,54 +239,37 @@ int vmm_setup_user_heap(process_t* process) {
     return 0;
 }
 
-// Helper: clone a single page
-static uint32_t clone_page(uint32_t parent_page_phys, uint32_t flags) {
-    // Allocate new page
-    void* child_page = pmm_alloc_page();
-    if (!child_page) return 0;
-
-    // Copy contents
-    uint8_t* src = (uint8_t*)parent_page_phys;
-    uint8_t* dst = (uint8_t*)child_page;
-
-    for (int i = 0; i < PAGE_SIZE; i++) {
-        dst[i] = src[i];
-    }
-
-    return ((uint32_t)child_page) | flags;
-}
-
-// Helper: clone a page table
-static uint32_t clone_pt(uint32_t parent_pt_phys) {
-    uint32_t* parent_pt = (uint32_t*)parent_pt_phys;
-    uint32_t* child_pt = (uint32_t*)pmm_alloc_page();
-
-    if (!child_pt) return 0;
-
-    // Clear child page table
-    for (int i = 0; i < ENTRIES_PER_TABLE; i++) {
-        child_pt[i] = 0;
-    }
-
-    // Clone each present page
+// COW-aware page table cloning: share pages read-only with COW flag
+static uint32_t cow_clone_pt(uint32_t* parent_pt, uint32_t* child_pt) {
     for (int i = 0; i < ENTRIES_PER_TABLE; i++) {
         if (parent_pt[i] & PAGE_PRESENT) {
             uint32_t page_phys = parent_pt[i] & ~0xFFF;
             uint32_t flags = parent_pt[i] & 0xFFF;
-            child_pt[i] = clone_page(page_phys, flags);
 
-            if (!child_pt[i]) {
-                // Cleanup on failure
-                pmm_free_page(child_pt);
-                return 0;
+            if (flags & PAGE_USER) {
+                // Mark as COW: remove writable, set COW bit
+                uint32_t cow_flags = (flags & ~PAGE_WRITABLE) | PAGE_COW;
+
+                // Update parent PTE to also be read-only + COW
+                parent_pt[i] = page_phys | cow_flags | PAGE_PRESENT;
+
+                // Child shares the same physical page
+                child_pt[i] = page_phys | cow_flags | PAGE_PRESENT;
+
+                // Bump reference count
+                pmm_ref_page((void*)page_phys);
+            } else {
+                // Kernel page — share directly
+                child_pt[i] = parent_pt[i];
             }
+        } else {
+            child_pt[i] = 0;
         }
     }
-
-    return (uint32_t)child_pt;
+    return 0;
 }
 
-// Clone an entire address space (for fork)
+// Clone an entire address space (for fork) using COW
 uint32_t* vmm_clone_address_space(uint32_t* parent_pd) {
     // Allocate new page directory
     uint32_t* child_pd = (uint32_t*)pmm_alloc_page();
@@ -281,31 +280,92 @@ uint32_t* vmm_clone_address_space(uint32_t* parent_pd) {
         child_pd[i] = 0;
     }
 
-    // Copy kernel mappings (entries 768-1023, 0xC0000000+)
-    for (int i = 768; i < ENTRIES_PER_TABLE; i++) {
+    // Share kernel identity mappings
+    for (int i = 0; i < KERNEL_SHARED_PDE_COUNT; i++) {
         child_pd[i] = parent_pd[i];
     }
 
-    // Clone user mappings (entries 0-767, below 0xC0000000)
-    for (int i = 0; i < 768; i++) {
+    // COW-clone user space page tables
+    for (int i = PD_INDEX(USER_VADDR_MIN); i < PD_INDEX(KERNEL_BASE); i++) {
         if (parent_pd[i] & PAGE_PRESENT) {
-            uint32_t child_pt = clone_pt(parent_pd[i] & ~0xFFF);
+            uint32_t* parent_pt = (uint32_t*)(parent_pd[i] & ~0xFFF);
+
+            // Allocate a new page table for the child
+            uint32_t* child_pt = (uint32_t*)pmm_alloc_page();
             if (!child_pt) {
-                // Cleanup on failure
                 vmm_destroy_address_space(child_pd);
                 return NULL;
             }
-            child_pd[i] = child_pt | (parent_pd[i] & 0xFFF);
+
+            // COW-clone entries
+            cow_clone_pt(parent_pt, child_pt);
+
+            child_pd[i] = ((uint32_t)child_pt) | (parent_pd[i] & 0xFFF);
         }
     }
+
+    // Flush parent's TLB since we changed its PTEs to read-only
+    asm volatile("mov %%cr3, %%eax; mov %%eax, %%cr3" ::: "eax", "memory");
 
     return child_pd;
 }
 
+// Handle a COW page fault: copy the shared page and remap as writable
+bool vmm_handle_cow_fault(uint32_t* pd, uint32_t faulting_address) {
+    faulting_address &= ~0xFFF;  // Page-align
+
+    size_t pd_idx = PD_INDEX(faulting_address);
+    size_t pt_idx = PT_INDEX(faulting_address);
+
+    // Must have a present page directory entry
+    if (!(pd[pd_idx] & PAGE_PRESENT)) return false;
+
+    uint32_t* pt = (uint32_t*)(pd[pd_idx] & ~0xFFF);
+
+    // Must be a present page with COW flag
+    if (!(pt[pt_idx] & PAGE_PRESENT)) return false;
+    if (!(pt[pt_idx] & PAGE_COW)) return false;
+
+    uint32_t old_phys = pt[pt_idx] & ~0xFFF;
+    uint32_t flags = pt[pt_idx] & 0xFFF;
+
+    // Check if we're the sole owner (refcount == 1)
+    if (pmm_get_refcount((void*)old_phys) == 1) {
+        // No need to copy — just make it writable and clear COW
+        pt[pt_idx] = old_phys | ((flags | PAGE_WRITABLE) & ~PAGE_COW) | PAGE_PRESENT;
+        asm volatile("invlpg (%0)" : : "r"(faulting_address) : "memory");
+        return true;
+    }
+
+    // Allocate a new page (raw — we're about to overwrite it)
+    void* new_page = pmm_alloc_page_raw();
+    if (!new_page) {
+        return false;  // OOM during COW — caller should kill process
+    }
+
+    // Copy contents (uint32_t-width for speed)
+    uint32_t* src = (uint32_t*)old_phys;
+    uint32_t* dst = (uint32_t*)new_page;
+    for (int i = 0; i < PAGE_SIZE / 4; i++) {
+        dst[i] = src[i];
+    }
+
+    // Drop reference to old shared page
+    pmm_unref_page((void*)old_phys);
+
+    // Remap with new page: writable, COW cleared
+    uint32_t new_flags = (flags | PAGE_WRITABLE) & ~PAGE_COW;
+    pt[pt_idx] = ((uint32_t)new_page) | new_flags | PAGE_PRESENT;
+
+    // Flush TLB for this address
+    asm volatile("invlpg (%0)" : : "r"(faulting_address) : "memory");
+
+    return true;
+}
+
 // Clear user space mappings (for exec)
 void vmm_clear_user_space(uint32_t* pd) {
-    // Clear user space entries (0-767), recursively freeing all pages
-    for (int i = 0; i < 768; i++) {
+    for (int i = PD_INDEX(USER_VADDR_MIN); i < PD_INDEX(KERNEL_BASE); i++) {
         if (pd[i] & PAGE_PRESENT) {
             free_pt(pd[i] & ~0xFFF);
             pd[i] = 0;

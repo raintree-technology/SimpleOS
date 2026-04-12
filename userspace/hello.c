@@ -1,30 +1,16 @@
 // Simple test program
-void sys_write(const char* str, int len) {
-    asm volatile(
-        "mov $2, %%rax\n"    // SYS_WRITE
-        "mov $1, %%rdi\n"    // stdout
-        "mov %0, %%rsi\n"    // string
-        "mov %1, %%rdx\n"    // length
-        "int $0x80"
-        :
-        : "r"(str), "r"(len)
-        : "memory"
-    );
-}
+#include "ulib.h"
 
-void sys_exit(int code) {
-    asm volatile(
-        "mov $1, %%rax\n"    // SYS_EXIT
-        "mov %0, %%rdi\n"    // exit code
-        "int $0x80"
-        :
-        : "r"(code)
-        : "memory"
-    );
-}
-
-void _start() {
-    const char* msg = "Hello from ELF!\n";
-    sys_write(msg, 16);
+void hello_main(void) {
+    WRITE_STR(1, "Hello from ELF!\n");
     sys_exit(0);
 }
+
+__asm__(
+    ".globl _start\n"
+    "_start:\n"
+    "    call hello_main\n"
+    "    movl $1, %eax\n"
+    "    xorl %ebx, %ebx\n"
+    "    int $0x80\n"
+);

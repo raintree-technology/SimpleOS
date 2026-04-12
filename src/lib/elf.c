@@ -1,9 +1,19 @@
-#include "../include/elf.h"
-#include "../include/process.h"
-#include "../include/vmm.h"
-#include "../include/pmm.h"
-#include "../include/string.h"
-#include "../include/terminal.h"
+#include "lib/elf.h"
+#include "kernel/process.h"
+#include "mm/vmm.h"
+#include "mm/pmm.h"
+#include "lib/string.h"
+#include "drivers/terminal.h"
+
+#ifdef DEBUG_ELF
+#define ELF_DEBUG(...) terminal_writestring(__VA_ARGS__)
+#define ELF_DEBUG_HEX(v) terminal_print_hex(v)
+#define ELF_DEBUG_INT(v) terminal_print_int(v)
+#else
+#define ELF_DEBUG(...) ((void)0)
+#define ELF_DEBUG_HEX(v) ((void)0)
+#define ELF_DEBUG_INT(v) ((void)0)
+#endif
 
 // Validate ELF header (32-bit)
 static int elf_validate(Elf32_Ehdr* header) {
@@ -34,6 +44,16 @@ static int elf_validate(Elf32_Ehdr* header) {
         return -1;
     }
 
+    if (header->e_phentsize != sizeof(Elf32_Phdr)) {
+        terminal_writestring("ELF: Unexpected program header size\n");
+        return -1;
+    }
+
+    if (header->e_entry < USER_VADDR_MIN || header->e_entry >= KERNEL_BASE) {
+        terminal_writestring("ELF: Entry point outside user range\n");
+        return -1;
+    }
+
     return 0;
 }
 
@@ -53,19 +73,25 @@ int elf_load(process_t* process, void* elf_data, size_t size) {
     }
 
     // Bounds check: ensure program headers are within the file
-    if (header->e_phoff + (header->e_phnum * sizeof(Elf32_Phdr)) > size) {
+    if (header->e_phoff > size) {
+        terminal_writestring("ELF: Invalid program header offset\n");
+        return -1;
+    }
+
+    if (header->e_phoff + ((size_t)header->e_phnum * sizeof(Elf32_Phdr)) > size) {
         terminal_writestring("ELF: Program headers extend beyond file\n");
         return -1;
     }
 
-    terminal_writestring("ELF: Loading executable, entry=");
-    terminal_print_hex(header->e_entry);
-    terminal_writestring("\n");
+    ELF_DEBUG("ELF: Loading executable, entry=");
+    ELF_DEBUG_HEX(header->e_entry);
+    ELF_DEBUG("\n");
 
     // Get program headers
     Elf32_Phdr* phdrs = (Elf32_Phdr*)((uint8_t*)elf_data + header->e_phoff);
 
     // Process each segment
+    uint32_t highest_loaded = USER_CODE_START;
     for (int i = 0; i < header->e_phnum; i++) {
         Elf32_Phdr* phdr = &phdrs[i];
 
@@ -73,17 +99,37 @@ int elf_load(process_t* process, void* elf_data, size_t size) {
             continue;
         }
 
-        terminal_writestring("ELF: Loading segment ");
-        terminal_print_int(i);
-        terminal_writestring(" vaddr=");
-        terminal_print_hex(phdr->p_vaddr);
-        terminal_writestring(" memsz=");
-        terminal_print_hex(phdr->p_memsz);
-        terminal_writestring("\n");
+        ELF_DEBUG("ELF: Loading segment ");
+        ELF_DEBUG_INT(i);
+        ELF_DEBUG(" vaddr=");
+        ELF_DEBUG_HEX(phdr->p_vaddr);
+        ELF_DEBUG(" memsz=");
+        ELF_DEBUG_HEX(phdr->p_memsz);
+        ELF_DEBUG("\n");
+
+        if (phdr->p_memsz < phdr->p_filesz) {
+            terminal_writestring("ELF: memsz smaller than filesz\n");
+            return -1;
+        }
+
+        if (phdr->p_memsz == 0) {
+            continue;
+        }
+
+        uint32_t segment_end = phdr->p_vaddr + phdr->p_memsz;
+        if (segment_end < phdr->p_vaddr) {
+            terminal_writestring("ELF: Segment address overflow\n");
+            return -1;
+        }
+
+        if (phdr->p_vaddr < USER_VADDR_MIN || segment_end >= KERNEL_BASE) {
+            terminal_writestring("ELF: Segment outside user range\n");
+            return -1;
+        }
 
         // Calculate required pages
-        uint32_t start = phdr->p_vaddr & ~0xFFF;
-        uint32_t end = (phdr->p_vaddr + phdr->p_memsz + 0xFFF) & ~0xFFF;
+        uint32_t start = PAGE_ALIGN_DOWN(phdr->p_vaddr);
+        uint32_t end = PAGE_ALIGN_UP(phdr->p_vaddr + phdr->p_memsz);
         uint32_t pages = (end - start) / PAGE_SIZE;
 
         // Map pages
@@ -132,7 +178,7 @@ int elf_load(process_t* process, void* elf_data, size_t size) {
                     return -1;
                 }
 
-                uint32_t page_off = vaddr & 0xFFF;
+                uint32_t page_off = vaddr & (PAGE_SIZE - 1);
                 uint32_t copy_size = PAGE_SIZE - page_off;
 
                 if (off + copy_size > phdr->p_filesz) {
@@ -158,7 +204,7 @@ int elf_load(process_t* process, void* elf_data, size_t size) {
                     return -1;
                 }
 
-                uint32_t page_off = vaddr & 0xFFF;
+                uint32_t page_off = vaddr & (PAGE_SIZE - 1);
                 uint32_t zero_size = PAGE_SIZE - page_off;
 
                 if (off + zero_size > bss_size) {
@@ -169,25 +215,24 @@ int elf_load(process_t* process, void* elf_data, size_t size) {
                 off += zero_size;
             }
         }
+
+        if (segment_end > highest_loaded) {
+            highest_loaded = segment_end;
+        }
     }
 
-    // Update process to have proper user mode context (32-bit)
-    // Set entry point for user mode execution
-    process->context.eip = header->e_entry;
-    process->context.esp = USER_STACK_TOP - 16; // Start near top of user stack
-    process->context.eflags = 0x202; // Interrupts enabled
-
-    // Set up user mode segments - we'll need to update this
-    // For now, just mark that this is a user process
-    process->entry_point = (void (*)(void))header->e_entry;
+    process->user_entry = header->e_entry;
+    if (process->heap_start < PAGE_ALIGN_UP(highest_loaded)) {
+        process->heap_start = PAGE_ALIGN_UP(highest_loaded);
+        process->heap_current = process->heap_start;
+    }
 
     return 0;
 }
 
 // Create process from ELF
 process_t* elf_create_process(void* elf_data, size_t size, const char* name) {
-    // Create process with a dummy entry point first
-    process_t* process = process_create(name, (void (*)(void))0x100000, 1);
+    process_t* process = process_create_user(name, 1);
     if (!process) {
         return NULL;
     }
@@ -198,9 +243,9 @@ process_t* elf_create_process(void* elf_data, size_t size, const char* name) {
         return NULL;
     }
 
-    terminal_writestring("ELF: Process '");
-    terminal_writestring(name);
-    terminal_writestring("' created\n");
+    ELF_DEBUG("ELF: Process '");
+    ELF_DEBUG(name);
+    ELF_DEBUG("' created\n");
 
     return process;
 }

@@ -1,7 +1,10 @@
 #include <stdint.h>
-#include "../include/isr.h"
-#include "../include/terminal.h"
-#include "../include/panic.h"
+#include <stdbool.h>
+#include "kernel/isr.h"
+#include "kernel/process.h"
+#include "mm/vmm.h"
+#include "drivers/terminal.h"
+#include "kernel/panic.h"
 
 // Page fault error code bits
 #define PF_PRESENT  (1 << 0)  // Page not present
@@ -73,13 +76,17 @@ void page_fault_handler(registers_t* regs) {
     print_hex_value(regs->eip);
     terminal_writestring("\n");
 
-    // In the future, we would:
-    // 1. Check if this is a valid page that needs to be loaded (demand paging)
-    // 2. Check if this is a stack growth situation
-    // 3. Check if this is a copy-on-write page
-    // 4. Kill the process if it's an invalid access
+    // Handle copy-on-write faults: write to a COW-shared page
+    if ((error & PF_PRESENT) && (error & PF_WRITE)) {
+        process_t* current = process_get_current();
+        if (current && current->page_directory) {
+            if (vmm_handle_cow_fault(current->page_directory, faulting_address)) {
+                return;  // COW resolved — resume execution
+            }
+        }
+    }
 
-    // For now, panic with full register dump
+    // Unrecoverable fault
     panic_with_regs("Unhandled page fault", regs);
 }
 

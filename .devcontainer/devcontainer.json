@@ -1,0 +1,28 @@
+{
+  "name": "SimpleOS Dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspaces/SimpleOS",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash"
+      },
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.makefile-tools",
+        "bradlc.vscode-tailwindcss",
+        "biomejs.biome",
+        "esbenp.prettier-vscode"
+      ]
+    }
+  },
+  "forwardPorts": [3500],
+  "runArgs": [
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges:true"
+  ],
+  "postCreateCommand": "cd web && npm install"
+}

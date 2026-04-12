@@ -67,11 +67,14 @@ load_new_context:
 # Entry point for new processes
 .global process_entry_trampoline
 .type process_entry_trampoline, @function
+.global process_user_entry_trampoline
+.type process_user_entry_trampoline, @function
+.global interrupt_return_trampoline
+.type interrupt_return_trampoline, @function
 
 process_entry_trampoline:
-    # In 32-bit cdecl, the entry point address is passed on stack
-    # But for simplicity, we'll use a register setup
-    # The entry point was put in edi before context switch
+    # Entry point address is in edi (context struct offset 0).
+    # Whoever sets up the initial context must store the entry point there.
     call *%edi
 
     # Process returned, call exit
@@ -82,3 +85,18 @@ process_entry_trampoline:
     # Should never reach here
 1:  hlt
     jmp 1b
+
+process_user_entry_trampoline:
+    call process_enter_user_mode
+
+1:  hlt
+    jmp 1b
+
+interrupt_return_trampoline:
+    pop %gs
+    pop %fs
+    pop %es
+    pop %ds
+    popal
+    addl $8, %esp
+    iret

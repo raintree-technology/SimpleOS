@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include "../include/terminal.h"
+#include "drivers/terminal.h"
 
 // Serial debug output (COM1 = 0x3F8)
 static inline void serial_char(char c) {
@@ -18,23 +18,24 @@ static inline void serial_str(const char* s) {
 }
 
 #define DEBUG_SERIAL(msg) serial_str(msg)
-#include "../include/isr.h"
-#include "../include/ports.h"
-#include "../include/timer.h"
-#include "../include/panic.h"
-#include "../include/process.h"
-#include "../include/scheduler.h"
-#include "../include/kmalloc.h"
-#include "../include/keyboard.h"
-#include "../include/exceptions.h"
-#include "../include/syscall.h"
-#include "../include/tss.h"
-#include "../include/usermode.h"
-#include "../include/pmm.h"
-#include "../include/vmm.h"
-#include "../include/elf.h"
-#include "../include/signal.h"
-#include "../include/../userspace/hello_binary.h"
+#include "kernel/isr.h"
+#include "drivers/ports.h"
+#include "drivers/timer.h"
+#include "kernel/panic.h"
+#include "kernel/process.h"
+#include "kernel/scheduler.h"
+#include "mm/kmalloc.h"
+#include "drivers/keyboard.h"
+#include "boot/exceptions.h"
+#include "kernel/syscall.h"
+#include "arch/i386/tss.h"
+#include "arch/i386/usermode.h"
+#include "mm/pmm.h"
+#include "mm/vmm.h"
+#include "lib/elf.h"
+#include "ipc/signal.h"
+#include "../../userspace/hello_binary.h"
+#include "../../userspace/shell_binary.h"
 
 // External assembly functions
 extern void load_gdt(uintptr_t gdt_ptr);
@@ -80,7 +81,7 @@ uint8_t* heap_current = (uint8_t*)HEAP_START;
 void test_process_1(void) {
     int counter = 0;
     while(1) {
-        terminal_writestring("[Process 1] Running - count: ");
+        terminal_writestring("[Kernel Thread A] Heartbeat ");
         terminal_print_int(counter);
         terminal_writestring("\n");
         counter++;
@@ -90,32 +91,32 @@ void test_process_1(void) {
 
 // Test process for memory isolation (simplified for 32-bit)
 void test_memory_process(void) {
-    terminal_writestring("[Memory Test] Process starting\n");
+    terminal_writestring("[Memory Check] Starting stack validation\n");
 
     // Test stack allocation only (syscalls removed for initial 32-bit port)
     char stack_buffer[1024];
-    const char* stack_msg = "Stack allocation works!";
+    const char* stack_msg = "stack frame looks healthy";
     for (int i = 0; stack_msg[i] && i < 23; i++) {
         stack_buffer[i] = stack_msg[i];
     }
     stack_buffer[23] = '\0';
 
-    terminal_writestring("[Memory Test] Stack test: ");
+    terminal_writestring("[Memory Check] Result: ");
     terminal_writestring(stack_buffer);
     terminal_writestring("\n");
 
     while(1) {
-        terminal_writestring("[Memory Test] Process running...\n");
+        terminal_writestring("[Memory Check] Background monitor online\n");
         sleep_ms(3000);
     }
 }
 
 // Test process using system calls (simplified for 32-bit)
 void test_syscall_process(void) {
-    terminal_writestring("[Syscall Process] Starting\n");
+    terminal_writestring("[Syscall Bridge] Dispatch loop online\n");
 
     while(1) {
-        terminal_writestring("[Syscall Process] Running...\n");
+        terminal_writestring("[Syscall Bridge] Waiting for requests\n");
         sleep_ms(2000);
     }
 }
@@ -123,7 +124,7 @@ void test_syscall_process(void) {
 void test_process_2(void) {
     int counter = 0;
     while(1) {
-        terminal_writestring("[Process 2] Running - count: ");
+        terminal_writestring("[Kernel Thread B] Heartbeat ");
         terminal_print_int(counter);
         terminal_writestring("\n");
         counter++;
@@ -133,16 +134,18 @@ void test_process_2(void) {
 
 void test_process_3(void) {
     while(1) {
-        terminal_writestring("[Process 3] Computing...\n");
+        terminal_writestring("[Compute Worker] Starting batch job\n");
         // CPU-intensive task
         volatile uint32_t sum = 0;
         for (volatile int i = 0; i < 10000000; i++) {
             sum += i;
         }
-        terminal_writestring("[Process 3] Done computing\n");
+        terminal_writestring("[Compute Worker] Batch complete\n");
         sleep_ms(2000);
     }
 }
+
+static bool shell_active = false;
 
 // Test ELF loader
 void test_elf_loader(void) {
@@ -164,7 +167,7 @@ void test_elf_loader(void) {
     if (proc) {
         terminal_writestring("ELF process created successfully!\n");
         terminal_writestring("Entry point: ");
-        terminal_print_hex((uint32_t)(uintptr_t)proc->entry_point);
+        terminal_print_hex(proc->user_entry);
         terminal_writestring("\n");
         terminal_writestring("Process should be ready to run\n");
     } else {
@@ -331,8 +334,8 @@ void init_idt(void) {
     idt_set_gate(32, (uintptr_t)irq0, 0x08, 0x8E);  // Timer
     idt_set_gate(33, (uintptr_t)irq1, 0x08, 0x8E);  // Keyboard
     
-    // System call - Note: 0xEE instead of 0x8E to allow user mode access (DPL=3)
-    idt_set_gate(128, (uintptr_t)isr128, 0x08, 0xEE); // INT 0x80
+    // System call uses a trap gate so IF is preserved across entry.
+    idt_set_gate(128, (uintptr_t)isr128, 0x08, 0xEF); // INT 0x80
 
     load_idt((uintptr_t)&ip);
 }
@@ -383,21 +386,20 @@ void init_paging(void) {
 
 // ISR handler
 void isr_handler(registers_t* regs) {
-    // Handle CPU exceptions (0-31)
+    if (interrupt_handlers[regs->int_no] != 0) {
+        isr_t handler = interrupt_handlers[regs->int_no];
+        handler(regs);
+        return;
+    }
+
     if (regs->int_no < 32) {
         exception_handler(regs);
         return;
     }
-    
-    // Handle other interrupts
-    if (interrupt_handlers[regs->int_no] != 0) {
-        isr_t handler = interrupt_handlers[regs->int_no];
-        handler(regs);
-    } else {
-        terminal_writestring("Unhandled interrupt: ");
-        terminal_print_uint(regs->int_no);
-        terminal_writestring("\n");
-    }
+
+    terminal_writestring("Unhandled interrupt: ");
+    terminal_print_uint(regs->int_no);
+    terminal_writestring("\n");
 }
 
 // Kernel main function
@@ -477,8 +479,9 @@ void kernel_main(void) {
     terminal_enable_vt();
     DEBUG_SERIAL("[K] All init complete!\n");
     
-    terminal_writestring("System initialized. Creating test processes...\n\n");
-    terminal_writestring("Press Alt+F1 through Alt+F4 to switch virtual terminals\n\n");
+    terminal_writestring("SimpleOS boot complete.\n");
+    terminal_writestring("Launching the multitasking demo...\n\n");
+    terminal_writestring("Tip: use Alt+F1 through Alt+F4 to switch virtual terminals.\n\n");
     
     // Enable interrupts
     asm volatile("sti");
@@ -493,11 +496,14 @@ void kernel_main(void) {
         panic("Failed to create test processes!");
     }
     
-    terminal_writestring("\nStarting scheduler...\n");
-    terminal_writestring("You should see processes interleaving their output.\n");
-    terminal_writestring("Commands: 'p' = process list, 's' = scheduler stats, 'f' = test page fault\n");
-    terminal_writestring("          't' = test syscall, 'u' = test user mode, 'e' = test ELF loader\n");
-    terminal_writestring("          'F' = test fork/exec, 'S' = start shell\n\n");
+    terminal_writestring("\nHanding control to the scheduler...\n");
+    terminal_writestring("Live output below shows kernel tasks taking turns on the CPU.\n");
+    terminal_writestring("Quick keys: 'p' process list, 's' scheduler stats, 'f' page fault test\n");
+    terminal_writestring("            't' syscall notes, 'u' user mode, 'e' ELF loader\n");
+    terminal_writestring("            'F' fork/exec, 'S' start shell\n\n");
+
+    // Start the shell automatically so the browser demo is interactive by default.
+    test_shell();
     
     // Enable scheduler - this will switch to first process
     scheduler_enable();
@@ -506,7 +512,7 @@ void kernel_main(void) {
     // This code only runs when no other process is ready
     while(1) {
         // Check for debug commands
-        if (keyboard_has_char()) {
+        if (!shell_active && keyboard_has_char()) {
             char c = keyboard_getchar();
             if (c == 'p') {
                 process_print_all();
@@ -566,39 +572,24 @@ void fork_test_main(void) {
     }
 }
 
-// External declaration for init_main (from syscall.c includes)
-extern void init_main(void);
-
-// Test shell by starting init process
+// Start the shell as a user-mode ELF process (fork/exec enabled).
 void test_shell(void) {
-    terminal_writestring("\n=== Starting Shell via Init ===\n");
-    
-    // Create init process
-    process_t* init = process_create("init", init_main, 1);
-    if (init) {
-        terminal_writestring("Init process created! Shell should start automatically.\n");
-        // Set parent_pid to 0 to make this the root process
-        init->parent_pid = 0;
-        
-        // Start shells on other terminals
-        extern int vt_get_current(void);
-        extern void vt_switch(int terminal);
-        
-        int current_vt = vt_get_current();
-        
-        // Start shell on VT1
-        vt_switch(1);
-        terminal_writestring("\n=== Virtual Terminal 2 ===\n");
-        terminal_writestring("Press 'S' to start shell on this terminal\n");
-        
-        // Start shell on VT2
-        vt_switch(2);
-        terminal_writestring("\n=== Virtual Terminal 3 ===\n");
-        terminal_writestring("Press 'S' to start shell on this terminal\n");
-        
-        // Back to original terminal
-        vt_switch(current_vt);
+    terminal_writestring("\n=== Starting Shell ===\n");
+
+    if (shell_elf_len == 0) {
+        terminal_writestring("ERROR: No shell ELF binary available\n");
+        return;
+    }
+
+    process_t* shell = elf_create_process(
+        (void*)shell_elf, shell_elf_len, "shell");
+    if (shell) {
+        shell->parent_pid = 0;
+        shell_active = true;
+        terminal_writestring("User-mode shell started (PID ");
+        terminal_print_uint(shell->pid);
+        terminal_writestring(")\n");
     } else {
-        terminal_writestring("Failed to create init process\n");
+        terminal_writestring("ERROR: Failed to create shell process\n");
     }
 }

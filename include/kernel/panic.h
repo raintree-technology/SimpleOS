@@ -1,7 +1,7 @@
 #ifndef PANIC_H
 #define PANIC_H
 
-#include "isr.h"
+#include "kernel/isr.h"
 
 // Panic and halt the system
 void panic(const char* msg);

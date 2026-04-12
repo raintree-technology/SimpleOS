@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stdarg.h>
-#include "../include/terminal.h"
-#include "../include/isr.h"
+#include "drivers/terminal.h"
+#include "kernel/isr.h"
 
 // Helper to print hex values (32-bit)
 static void print_hex(const char* label, uint32_t value) {

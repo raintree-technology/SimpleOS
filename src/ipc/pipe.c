@@ -1,7 +1,8 @@
-#include "../include/pipe.h"
-#include "../include/kmalloc.h"
-#include "../include/scheduler.h"
-#include "../include/string.h"
+#include "ipc/pipe.h"
+#include "mm/kmalloc.h"
+#include "kernel/scheduler.h"
+#include "lib/string.h"
+#include "kernel/process.h"
 
 // Create a new pipe
 pipe_t* pipe_create(void) {
@@ -39,8 +40,7 @@ int pipe_read(pipe_t* pipe, void* buffer, size_t count) {
             if (pipe->writer_closed) {
                 break;
             }
-            // Otherwise block waiting for data
-            // In real implementation, would yield CPU
+            process_yield();
             continue;
         }
         
@@ -66,8 +66,7 @@ int pipe_write(pipe_t* pipe, const void* buffer, size_t count) {
     while (bytes_written < count) {
         // If pipe is full
         if (pipe->count == PIPE_SIZE) {
-            // Block waiting for space
-            // In real implementation, would yield CPU
+            process_yield();
             continue;
         }
         

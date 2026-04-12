@@ -1,7 +1,7 @@
-#include "../include/signal.h"
-#include "../include/process.h"
-#include "../include/terminal.h"
-#include "../include/scheduler.h"
+#include "ipc/signal.h"
+#include "kernel/process.h"
+#include "drivers/terminal.h"
+#include "kernel/scheduler.h"
 
 // External process table for lookup
 extern process_t* process_table[];

@@ -1,7 +1,7 @@
 // This file implements low-level I/O port operations for SimpleOS.
 // It provides functions to read from and write to hardware ports using inline assembly.
 
-#include "../include/ports.h"
+#include "drivers/ports.h"
 
 // read a byte from a port
 uint8_t inb(uint16_t port) {

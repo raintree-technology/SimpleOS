@@ -221,7 +221,6 @@ isr_common_stub:
 
     # Clean up error code and interrupt number (2 * 4 bytes)
     addl $8, %esp
-    sti
     iret
 
 # IRQ handlers
@@ -238,6 +237,7 @@ irq1:
     jmp isr_common_stub
 
 # System call handler (INT 0x80 = 128)
+# Note: cli added for consistency with other ISR stubs.
 isr128:
     cli
     pushl $0

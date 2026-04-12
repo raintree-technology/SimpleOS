@@ -1,7 +1,7 @@
 #ifndef EXCEPTIONS_H
 #define EXCEPTIONS_H
 
-#include "isr.h"
+#include "kernel/isr.h"
 
 // Exception handlers
 void page_fault_handler(registers_t* regs);

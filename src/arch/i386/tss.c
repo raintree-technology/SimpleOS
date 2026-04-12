@@ -1,5 +1,6 @@
-#include "../include/tss.h"
-#include "../include/terminal.h"
+#include "arch/i386/tss.h"
+#include "lib/string.h"
+#include "drivers/terminal.h"
 #include <stdint.h>
 
 // Global TSS instance
@@ -11,10 +12,7 @@ static uint8_t default_kernel_stack[8192] __attribute__((aligned(16)));
 // Initialize the TSS (32-bit version)
 void tss_init(void) {
     // Clear the TSS structure
-    uint8_t* tss_ptr = (uint8_t*)&tss;
-    for (size_t i = 0; i < sizeof(tss_t); i++) {
-        tss_ptr[i] = 0;
-    }
+    memset(&tss, 0, sizeof(tss_t));
 
     // Set up the kernel stack pointer (ESP0)
     // This will be used when transitioning from ring 3 to ring 0
