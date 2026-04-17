@@ -63,7 +63,6 @@ static void terminal_scroll(void) {
     terminal_row = VGA_HEIGHT - 1;
 }
 
-// Check if virtual terminals are enabled
 static int vt_enabled = 0;
 
 void terminal_putchar(char c) {

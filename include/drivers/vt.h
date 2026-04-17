@@ -16,20 +16,17 @@ typedef struct {
     int shell_pid;                 // PID of shell running on this VT
 } virtual_terminal_t;
 
-// Initialize virtual terminals
 void vt_init(void);
 
 // Switch to virtual terminal (0-3)
 void vt_switch(int terminal);
 
-// Get current virtual terminal
 int vt_get_current(void);
 
 // Write to current virtual terminal
 void vt_putchar(char c);
 void vt_writestring(const char* str);
 
-// Clear current virtual terminal
 void vt_clear(void);
 
 // Update physical screen from current VT

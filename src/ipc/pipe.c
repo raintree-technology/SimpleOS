@@ -26,7 +26,6 @@ void pipe_destroy(pipe_t* pipe) {
     pipe->writer_closed = 1;
 }
 
-// Read from pipe
 int pipe_read(pipe_t* pipe, void* buffer, size_t count) {
     if (!pipe || pipe->reader_closed) return -1;
     
@@ -53,7 +52,6 @@ int pipe_read(pipe_t* pipe, void* buffer, size_t count) {
     return bytes_read;
 }
 
-// Write to pipe
 int pipe_write(pipe_t* pipe, const void* buffer, size_t count) {
     if (!pipe || pipe->writer_closed) return -1;
     

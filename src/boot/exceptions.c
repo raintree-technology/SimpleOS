@@ -180,7 +180,6 @@ void stack_fault_handler(registers_t* regs) {
     panic_with_regs("Stack segment fault", regs);
 }
 
-// Initialize exception handlers
 void init_exceptions(void) {
     // Register specific handlers for important exceptions
     register_interrupt_handler(6, invalid_opcode_handler);

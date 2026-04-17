@@ -463,7 +463,6 @@ void free_process_struct(process_t* process) {
     kfree(process);
 }
 
-// Find a zombie child process
 process_t* find_zombie_child(uint32_t parent_pid) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_t* proc = process_table[i];

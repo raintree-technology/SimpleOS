@@ -6,7 +6,6 @@
 // External process table for lookup
 extern process_t* process_table[];
 
-// Find process by PID
 process_t* process_find_by_pid(uint32_t pid) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
         if (process_table[i] && process_table[i]->pid == pid) {
@@ -16,7 +15,6 @@ process_t* process_find_by_pid(uint32_t pid) {
     return NULL;
 }
 
-// Initialize signal handling for a process
 void signal_init_process(process_t* proc) {
     if (!proc) return;
 
@@ -29,12 +27,10 @@ void signal_init_process(process_t* proc) {
     }
 }
 
-// Initialize signal subsystem
 void signal_init(void) {
     terminal_writestring("Signal subsystem initialized\n");
 }
 
-// Send a signal to a process
 void signal_send(int pid, int sig) {
     if (sig < 1 || sig >= NSIG) {
         return;

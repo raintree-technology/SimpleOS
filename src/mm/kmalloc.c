@@ -28,7 +28,6 @@ static size_t total_allocated = 0;
 static size_t total_free = HEAP_SIZE;
 static size_t allocation_count = 0;
 
-// Initialize the heap
 static void init_heap(void) {
     head = (block_t*)heap_start;
     head->size = HEAP_SIZE - BLOCK_HEADER_SIZE;

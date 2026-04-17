@@ -10,7 +10,6 @@ void double_fault_handler(registers_t* regs);
 void invalid_opcode_handler(registers_t* regs);
 void stack_fault_handler(registers_t* regs);
 
-// Initialize exception handlers
 void init_exceptions(void);
 
 #endif // EXCEPTIONS_H

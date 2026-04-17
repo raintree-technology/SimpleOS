@@ -168,7 +168,6 @@ static fs_dirent_t* dir_iterate(fs_node_t* dir, dir_entry_cb cb, void* ctx) {
     return NULL;
 }
 
-// Initialize filesystem
 void fs_init(void) {
     // Clear all structures
     for (int i = 0; i < FS_MAX_FILES; i++) {

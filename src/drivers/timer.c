@@ -83,7 +83,6 @@ static void timer_callback(registers_t* regs) {
     scheduler_tick();
 }
 
-// Initialize the timer
 void init_timer(uint32_t frequency) {
     timer_frequency = frequency;
 

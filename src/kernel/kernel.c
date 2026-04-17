@@ -264,7 +264,6 @@ void gdt_set_tss(int num, uint32_t base, uint32_t limit) {
     gdt[num].access = 0x89;  // Present, ring 0, 32-bit TSS
 }
 
-// Initialize GDT
 void init_gdt(void) {
     gp.limit = (sizeof(struct gdt_entry) * GDT_ENTRIES) - 1;
     gp.base = (uintptr_t)&gdt;
@@ -299,7 +298,6 @@ void idt_set_gate(uint8_t num, uintptr_t base, uint16_t sel, uint8_t flags) {
     idt[num].type_attr = flags;
 }
 
-// Initialize IDT
 void init_idt(void) {
     ip.limit = (sizeof(struct idt_entry) * IDT_ENTRIES) - 1;
     ip.base = (uintptr_t)&idt;

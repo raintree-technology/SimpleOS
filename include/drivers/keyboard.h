@@ -3,7 +3,6 @@
 
 #include <stdbool.h>
 
-// Initialize keyboard driver
 void init_keyboard(void);
 
 // Check if keyboard has character available

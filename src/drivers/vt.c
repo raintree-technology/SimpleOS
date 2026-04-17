@@ -10,7 +10,6 @@ static int current_terminal = 0;
 // VGA memory
 static uint16_t* vga_buffer = (uint16_t*)0xB8000;
 
-// Initialize virtual terminals
 void vt_init(void) {
     for (int i = 0; i < NUM_VIRTUAL_TERMINALS; i++) {
         // Clear buffer
@@ -29,7 +28,6 @@ void vt_init(void) {
     vt_refresh();
 }
 
-// Switch to virtual terminal
 void vt_switch(int terminal) {
     if (terminal < 0 || terminal >= NUM_VIRTUAL_TERMINALS) return;
     if (terminal == current_terminal) return;
@@ -49,12 +47,10 @@ void vt_switch(int terminal) {
     terminal_set_cursor(terminals[terminal].cursor_x, terminals[terminal].cursor_y);
 }
 
-// Get current virtual terminal
 int vt_get_current(void) {
     return current_terminal;
 }
 
-// Write character to current virtual terminal
 void vt_putchar(char c) {
     virtual_terminal_t* vt = &terminals[current_terminal];
     

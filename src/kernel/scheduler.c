@@ -122,14 +122,12 @@ void scheduler_tick(void) {
     }
 }
 
-// Initialize scheduler
 void scheduler_init(void) {
     scheduler_enabled = false;
     schedule_count = 0;
     terminal_writestring("Scheduler ready (standby)\n");
 }
 
-// Enable scheduler
 void scheduler_enable(void) {
     scheduler_enabled = true;
     terminal_writestring("Scheduler live\n");
@@ -138,13 +136,11 @@ void scheduler_enable(void) {
     schedule();
 }
 
-// Disable scheduler
 void scheduler_disable(void) {
     scheduler_enabled = false;
     terminal_writestring("Scheduler paused\n");
 }
 
-// Get scheduler statistics
 void scheduler_stats(void) {
     terminal_writestring("Scheduler statistics:\n");
     terminal_writestring("  Schedule count: ");
