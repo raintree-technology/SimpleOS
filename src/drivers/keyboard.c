@@ -1,6 +1,3 @@
-// This file implements keyboard input handling for SimpleOS.
-// It sets up the keyboard interrupt handler and translates scancodes to ASCII characters.
-
 #include <stdint.h>
 #include <stdbool.h>
 #include "drivers/ports.h"

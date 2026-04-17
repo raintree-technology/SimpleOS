@@ -1,6 +1,3 @@
-// This file implements terminal output functions for SimpleOS.
-// It provides low-level screen manipulation for text mode display.
-
 #include "drivers/terminal.h"
 #include <stddef.h>
 #include <stdint.h>
