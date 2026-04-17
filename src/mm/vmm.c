@@ -130,38 +130,28 @@ int vmm_map_page(uint32_t* pd, uint32_t virt, uint32_t phys, uint32_t flags) {
     return 0;
 }
 
-// Unmap a page
 void vmm_unmap_page(uint32_t* pd, uint32_t virt) {
     virt &= ~0xFFF;
 
-    // Get indices
     size_t pd_idx = PD_INDEX(virt);
     size_t pt_idx = PT_INDEX(virt);
 
-    // Check if page directory entry exists
     if (!(pd[pd_idx] & PAGE_PRESENT)) return;
 
-    // Get page table
     uint32_t* pt = (uint32_t*)(pd[pd_idx] & ~0xFFF);
-
-    // Clear the page table entry
     pt[pt_idx] = 0;
 
     // Flush TLB
     asm volatile("invlpg (%0)" : : "r"(virt) : "memory");
 }
 
-// Get physical address from virtual
 uint32_t vmm_get_physical(uint32_t* pd, uint32_t virt) {
-    // Get indices
     size_t pd_idx = PD_INDEX(virt);
     size_t pt_idx = PT_INDEX(virt);
 
-    // Check page directory
     if (!(pd[pd_idx] & PAGE_PRESENT)) return 0;
     uint32_t* pt = (uint32_t*)(pd[pd_idx] & ~0xFFF);
 
-    // Check page table
     if (!(pt[pt_idx] & PAGE_PRESENT)) return 0;
 
     // Return physical address plus offset

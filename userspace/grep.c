@@ -2,7 +2,6 @@
 // Built as a userspace ELF binary for /bin/grep
 //
 // Usage: grep <pattern>
-// Reads from stdin, prints lines containing <pattern>.
 
 #include "ulib.h"
 
