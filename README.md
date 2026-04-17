@@ -1,5 +1,4 @@
 # SimpleOS
-
 > An operating system built from scratch in C and x86 assembly that runs in your browser.
 >
 > [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -15,18 +14,18 @@
 >
 > ## Table of Contents
 >
-> - [Demo](#demo)
-> - - [Features](#features)
->   - - [What's Inside](#whats-inside)
->     - - [Memory Layout](#memory-layout)
->       - - [Syscalls](#syscalls)
->         - - [Shell](#shell)
->           - - [Repository Layout](#repository-layout)
->             - - [Getting Started](#getting-started)
->               - - [Contributing](#contributing)
->                 - - [License](#license)
+> [Demo](#demo)
+> - [Features](#features)
+>   - [What's Inside](#whats-inside)
+>     - [Memory Layout](#memory-layout)
+>       - [Syscalls](#syscalls)
+>         - [Shell](#shell)
+>           - [Repository Layout](#repository-layout)
+>             - [Getting Started](#getting-started)
+>               - [Contributing](#contributing)
+>                 - [License](#license)
 >                  
->                   - ---
+>                   ----
 >
 > ## Demo
 >
@@ -40,17 +39,17 @@
 > >
 > > ## Features
 > >
-> > - Preemptive round-robin scheduler with 10-tick quantum
-> > - - Two-level paging with copy-on-write `fork()`
-> >   - - 18 syscalls via `int 0x80` (fork, execve, wait, pipe, dup2, kill, and more)
-> >     - - Unix-style signals (SIGINT, SIGKILL, SIGSTOP, etc.)
-> >       - - In-memory ramfs with pre-populated `/bin/*`
-> >         - - VGA text mode, PS/2 keyboard, PIT timer, virtual terminal switching (Alt+F1–F4)
-> >           - - 32-bit ELF loader for user-mode binaries
-> >             - - Freestanding userspace: shell, grep, wc, hello
-> >               - - Runs entirely in-browser via the v86 x86 emulator
+> > Preemptive round-robin scheduler with 10-tick quantum
+> > - Two-level paging with copy-on-write `fork()`
+> >   - 18 syscalls via `int 0x80` (fork, execve, wait, pipe, dup2, kill, and more)
+> >     - Unix-style signals (SIGINT, SIGKILL, SIGSTOP, etc.)
+> >       - In-memory ramfs with pre-populated `/bin/*`
+> >         - VGA text mode, PS/2 keyboard, PIT timer, virtual terminal switching (Alt+F1–F4)
+> >           - 32-bit ELF loader for user-mode binaries
+> >             - Freestanding userspace: shell, grep, wc, hello
+> >               - Runs entirely in-browser via the v86 x86 emulator
 > >                
-> >                 - ---
+> >                 ---
 > >
 > > ## What's Inside
 > >
@@ -130,15 +129,15 @@
 > >
 > > The shell supports:
 > >
-> > - **Built-ins:** `help`, `ps`, `echo`, `cd`, `clear`, `exit`, `jobs`, `bg`, `fg`, `kill`
-> > - - **External programs:** `/bin/hello`, `/bin/grep`, `/bin/wc` (via fork + execve)
-> >   - - **Pipes:** `echo hello | wc`
-> >     - - **Redirection:** `cmd > file`, `cmd < file`
-> >       - - **Background jobs:** `cmd &`, then `jobs`, `fg`, `bg`
-> >         - - **Job control:** Ctrl+C (SIGINT), Ctrl+Z (SIGTSTP)
-> >           - - **History:** up/down arrows (10 entries)
+> > **Built-ins:** `help`, `ps`, `echo`, `cd`, `clear`, `exit`, `jobs`, `bg`, `fg`, `kill`
+> > - **External programs:** `/bin/hello`, `/bin/grep`, `/bin/wc` (via fork + execve)
+> >   - **Pipes:** `echo hello | wc`
+> >     - **Redirection:** `cmd > file`, `cmd < file`
+> >       - **Background jobs:** `cmd &`, then `jobs`, `fg`, `bg`
+> >         - **Job control:** Ctrl+C (SIGINT), Ctrl+Z (SIGTSTP)
+> >           - **History:** up/down arrows (10 entries)
 > >            
-> >             - ---
+> >             ----
 > >
 > > ## Repository Layout
 > >
@@ -201,9 +200,9 @@
 > >
 > > The web app expects three assets:
 > >
-> > - `web/public/os/simpleos.iso` — built by `make` or `./build.sh`
-> > - - `web/public/bios/seabios.bin` — SeaBIOS ROM
-> >   - - `web/public/bios/vgabios.bin` — VGA BIOS ROM
+> > `web/public/os/simpleos.iso` — built by `make` or `./build.sh`
+> > - `web/public/bios/seabios.bin` — SeaBIOS ROM
+> >   - `web/public/bios/vgabios.bin` — VGA BIOS ROM
 > >    
 > >     - If anything is missing, the preflight check shows exactly what's absent instead of booting into a broken state.
 > >    
@@ -220,18 +219,18 @@
 > >
 > > From there:
 > >
-> > - **Boot:** `boot.s` → how the CPU gets from GRUB to `kernel_main`
-> > - - **Interrupts:** `asm_functions.s` → ISR stubs, IDT/GDT loading, paging enable
-> >   - - **Processes:** `process.c` → PCB structure, creation, destruction
-> >     - - **Scheduling:** `scheduler.c` → preemptive round-robin, context switch calls
-> >       - - **Memory:** `vmm.c` → page tables, COW fork, address space management
-> >         - - **Syscalls:** `syscall.c` → `int 0x80` dispatch, all 18 implementations
-> >           - - **Userspace:** `ulib.h` → syscall wrappers that user programs call
-> >             - - **Shell:** `shell.c` → pipes, redirection, job control in ~500 lines
+> > **Boot:** `boot.s` → how the CPU gets from GRUB to `kernel_main`
+> > - **Interrupts:** `asm_functions.s` → ISR stubs, IDT/GDT loading, paging enable
+> >   - **Processes:** `process.c` → PCB structure, creation, destruction
+> >     - **Scheduling:** `scheduler.c` → preemptive round-robin, context switch calls
+> >       - **Memory:** `vmm.c` → page tables, COW fork, address space management
+> >         - **Syscalls:** `syscall.c` → `int 0x80` dispatch, all 18 implementations
+> >           - **Userspace:** `ulib.h` → syscall wrappers that user programs call
+> >             - **Shell:** `shell.c` → pipes, redirection, job control in ~500 lines
 > >              
 > >               - `verify_os.py` checks code integrity without compiling — include dependencies, function signatures, syscall coverage, signal integration, and common issues like duplicate includes or unfinished TODOs.
 > >              
-> >               - ---
+> >               ---
 > >
 > > ## Contributing
 > >
