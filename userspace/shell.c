@@ -365,65 +365,6 @@ static int execute_command_bg(char* cmd, int background) {
         }
         return 0;
     }
-    else if (str_cmp(argv[0], "grep") == 0) {
-        if (argc < 2) {
-            WRITE_STR(1, "Usage: grep <pattern>\n");
-        } else {
-            const char* pattern = argv[1];
-            char line[256];
-            int line_pos = 0;
-            while (1) {
-                char c;
-                int bytes = sys_read(0, &c, 1);
-                if (bytes <= 0) {
-                    if (line_pos > 0) {
-                        line[line_pos] = '\0';
-                        if (str_str(line, pattern)) {
-                            sys_write(1, line, line_pos);
-                            WRITE_STR(1, "\n");
-                        }
-                    }
-                    break;
-                }
-                if (c == '\n') {
-                    line[line_pos] = '\0';
-                    if (str_str(line, pattern)) {
-                        sys_write(1, line, line_pos);
-                        WRITE_STR(1, "\n");
-                    }
-                    line_pos = 0;
-                } else if (line_pos < 255) {
-                    line[line_pos++] = c;
-                }
-            }
-        }
-        return 0;
-    }
-    else if (str_cmp(argv[0], "wc") == 0) {
-        int lines = 0, words = 0, chars = 0;
-        int in_word = 0;
-        char buffer[256];
-        while (1) {
-            int bytes = sys_read(0, buffer, sizeof(buffer));
-            if (bytes <= 0) break;
-            for (int i = 0; i < bytes; i++) {
-                chars++;
-                if (buffer[i] == '\n') lines++;
-                if (buffer[i] == ' ' || buffer[i] == '\t' || buffer[i] == '\n') {
-                    if (in_word) { words++; in_word = 0; }
-                } else {
-                    in_word = 1;
-                }
-            }
-        }
-        if (in_word) words++;
-        char buf[16];
-        WRITE_STR(1, "  "); int_to_str(lines, buf); WRITE_STR(1, buf);
-        WRITE_STR(1, "  "); int_to_str(words, buf); WRITE_STR(1, buf);
-        WRITE_STR(1, "  "); int_to_str(chars, buf); WRITE_STR(1, buf);
-        WRITE_STR(1, "\n");
-        return 0;
-    }
     else if (str_cmp(argv[0], "exit") == 0) {
         WRITE_STR(1, "Goodbye!\n");
         sys_exit(0);
